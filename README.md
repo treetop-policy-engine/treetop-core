@@ -286,6 +286,9 @@ from authenticated, application-controlled state. Reloads through
 `reload_from_str*` retain the configured layout and publish a fully validated,
 fully partitioned replacement atomically.
 
+See [Policy-Store Design and Format](docs/PolicyStores.md) for the complete
+assignment, annotation, routing, reload, and downstream integration contract.
+
 ## Groups
 
 Groups are listed as the principal entity type `Group`, and to permit access to member of a group, you can use the `in` operator. If you say `principal in Group::"admins"`, it will match any principal that is a member of the group `admins`, but if you say `principal == Group::"admins"`, it will only match the group itself, not its members. You will almost always want to use the `in` operator when dealing with groups...
