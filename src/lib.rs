@@ -104,6 +104,9 @@ pub use engine::PolicyEngine;
 pub use error::PolicyError;
 pub use labels::{LabelRegistry, LabelRegistryBuilder, Labeler, RegexLabeler};
 pub use loader::{compile_policy, compile_policy_with_schema};
+pub use policy_store::{
+    POLICY_STORE_ANNOTATION, PolicyStoreConfig, PolicyStoreId, PolicyStoreLayout,
+};
 pub use types::{
     Action, AttrValue, CedarType, Decision, DecisionDiagnostics, Group, Groups, PermitPolicies,
     PermitPolicy, PolicyEffectFilter, PolicyMatch, PolicyMatchReason, PolicyVersion, Principal,
@@ -127,6 +130,7 @@ pub mod metrics;
 #[cfg(all(not(feature = "observability"), feature = "bench-internal"))]
 mod metrics;
 mod policy_match;
+mod policy_store;
 mod query;
 #[cfg(test)]
 mod tests;

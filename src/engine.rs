@@ -10,6 +10,9 @@ use crate::labels::LabelRegistry;
 use crate::policy_match::{
     action_match_reason, matches_effect, principal_match_reason, resource_match_reason,
 };
+use crate::policy_store::{
+    ExplicitPolicyStore, PolicyStoreId, PolicyStoreLayout, display_policy_id,
+};
 use crate::query::{ActionQuery, PrincipalQuery, ResourceQuery};
 use crate::timers::PhaseTimer;
 use crate::traits::CedarAtom;
@@ -85,6 +88,7 @@ struct PreparedRequest {
     cedar_req: CedarRequest,
     entities: Entities,
     snapshot: Snapshot,
+    selected_store: Option<usize>,
     timers: EvalTimers,
     #[cfg(feature = "observability")]
     sink: crate::metrics::SinkGuard,
@@ -92,10 +96,92 @@ struct PreparedRequest {
     metrics_enabled: bool,
 }
 
-/// Immutable snapshot of a compiled policy set, along with metadata.
+/// Compiled authorization policy sets for a monolithic or partitioned engine.
+#[derive(Debug)]
+enum PolicySets {
+    Monolithic(Box<PolicySet>),
+    Scoped {
+        layout: PolicyStoreLayout,
+        stores: Vec<PolicySet>,
+    },
+}
+
+enum PolicySetIter<'a> {
+    Monolithic(std::iter::Once<&'a PolicySet>),
+    Scoped(std::slice::Iter<'a, PolicySet>),
+}
+
+impl<'a> Iterator for PolicySetIter<'a> {
+    type Item = &'a PolicySet;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Monolithic(iter) => iter.next(),
+            Self::Scoped(iter) => iter.next(),
+        }
+    }
+}
+
+impl PolicySets {
+    fn layout(&self) -> Option<&PolicyStoreLayout> {
+        match self {
+            Self::Monolithic(_) => None,
+            Self::Scoped { layout, .. } => Some(layout),
+        }
+    }
+
+    fn resolve_store(&self, request: &Request) -> Result<Option<usize>, PolicyError> {
+        match self {
+            Self::Monolithic(_) => Ok(None),
+            Self::Scoped { layout, .. } => layout
+                .resolve_request(&request.action, &request.resource)
+                .map(Some),
+        }
+    }
+
+    fn selected(&self, store: Option<usize>) -> Result<&PolicySet, PolicyError> {
+        match (self, store) {
+            (Self::Monolithic(set), None) => Ok(set),
+            (Self::Scoped { layout, stores }, Some(index)) => stores.get(index).ok_or_else(|| {
+                PolicyError::PolicyStoreRoutingError(format!(
+                    "configured policy-store index {index} is outside layout length {}",
+                    layout.stores().len()
+                ))
+            }),
+            (Self::Monolithic(_), Some(index)) => Err(PolicyError::PolicyStoreRoutingError(
+                format!("monolithic engine was given policy-store index {index}"),
+            )),
+            (Self::Scoped { .. }, None) => Err(PolicyError::PolicyStoreRoutingError(
+                "partitioned engine did not resolve a policy store".to_string(),
+            )),
+        }
+    }
+
+    fn iter(&self) -> PolicySetIter<'_> {
+        match self {
+            Self::Monolithic(set) => PolicySetIter::Monolithic(std::iter::once(set)),
+            Self::Scoped { stores, .. } => PolicySetIter::Scoped(stores.iter()),
+        }
+    }
+
+    fn store_ids(&self) -> Option<Vec<PolicyStoreId>> {
+        let Self::Scoped { layout, .. } = self else {
+            return None;
+        };
+        Some(
+            layout
+                .stores()
+                .iter()
+                .map(|store| store.id().clone())
+                .collect(),
+        )
+    }
+}
+
+/// Immutable snapshot of compiled policy sets, along with metadata.
 #[derive(Debug)]
 struct PolicySnapshot {
-    set: PolicySet,
+    sets: PolicySets,
     version: PolicyVersion,
     permit_policies: HashMap<PolicyId, PermitPolicy>,
     forbid_policy_ids: HashMap<PolicyId, String>,
@@ -107,12 +193,20 @@ type Snapshot = Arc<PolicySnapshot>;
 
 impl PolicySnapshot {
     fn from_policy_text(policy_text: &str) -> Result<Self, PolicyError> {
-        Self::from_policy_text_with_schema(policy_text, None)
+        Self::from_policy_text_with_schema_and_stores(policy_text, None, None)
     }
 
     fn from_policy_text_with_schema(
         policy_text: &str,
         schema: Option<Arc<Schema>>,
+    ) -> Result<Self, PolicyError> {
+        Self::from_policy_text_with_schema_and_stores(policy_text, schema, None)
+    }
+
+    fn from_policy_text_with_schema_and_stores(
+        policy_text: &str,
+        schema: Option<Arc<Schema>>,
+        layout: Option<PolicyStoreLayout>,
     ) -> Result<Self, PolicyError> {
         let set = match schema.as_deref() {
             Some(schema) => loader::compile_policy_with_schema(policy_text, schema)?,
@@ -120,6 +214,10 @@ impl PolicySnapshot {
         };
         let permit_policies = loader::precompute_permit_policies(&set)?;
         let forbid_policy_ids = loader::precompute_forbid_policy_ids(&set);
+        let sets = match layout {
+            Some(layout) => partition_policy_set(&set, layout)?,
+            None => PolicySets::Monolithic(Box::new(set)),
+        };
 
         let mut hasher = Sha256::new();
         hasher.update(policy_text.as_bytes());
@@ -132,7 +230,7 @@ impl PolicySnapshot {
         }
 
         Ok(PolicySnapshot {
-            set,
+            sets,
             version: PolicyVersion {
                 hash: hash.into(),
                 loaded_at: humantime::format_rfc3339(SystemTime::now())
@@ -145,10 +243,6 @@ impl PolicySnapshot {
         })
     }
 
-    fn policy_set(&self) -> &PolicySet {
-        &self.set
-    }
-
     fn version(&self) -> PolicyVersion {
         self.version.clone()
     }
@@ -156,6 +250,107 @@ impl PolicySnapshot {
     fn schema(&self) -> Option<&Schema> {
         self.schema.as_deref()
     }
+}
+
+fn partition_policy_set(
+    source: &PolicySet,
+    layout: PolicyStoreLayout,
+) -> Result<PolicySets, PolicyError> {
+    let mut stores = (0..layout.stores().len())
+        .map(|_| PolicySet::new())
+        .collect::<Vec<_>>();
+    let mut found_global_policy_ids = HashSet::new();
+
+    for policy in source.policies() {
+        let display_id = display_policy_id(policy);
+        let registered_global = policy
+            .annotation("id")
+            .is_some_and(|id| layout.global_policy_ids().contains(id));
+        if registered_global {
+            found_global_policy_ids.insert(display_id.to_string());
+        }
+
+        let explicit = layout.explicit_policy_store(policy)?;
+        if registered_global
+            && let Some(ExplicitPolicyStore::Store(store_index)) = explicit.as_ref()
+        {
+            return Err(PolicyError::PolicyStoreConfigError(format!(
+                "policy '{display_id}' is registered as global but @{POLICY_STORE_ANNOTATION} assigns it to store '{}'",
+                layout.stores()[*store_index].id(),
+                POLICY_STORE_ANNOTATION = crate::POLICY_STORE_ANNOTATION
+            )));
+        }
+        let target_indexes = if registered_global
+            || matches!(explicit, Some(ExplicitPolicyStore::Global))
+        {
+            (0..layout.stores().len()).collect::<Vec<_>>()
+        } else {
+            let candidates = layout.policy_candidates(policy)?;
+            match explicit {
+                Some(ExplicitPolicyStore::Store(store_index)) => {
+                    if candidates
+                        .first()
+                        .is_some_and(|candidate| *candidate != store_index)
+                    {
+                        return Err(PolicyError::PolicyStoreConfigError(format!(
+                            "policy '{display_id}' is assigned to store '{}' but its scope identifies store '{}'",
+                            layout.stores()[store_index].id(),
+                            layout.stores()[candidates[0]].id()
+                        )));
+                    }
+                    vec![store_index]
+                }
+                None => match candidates.as_slice() {
+                    [store_index] => vec![*store_index],
+                    [] => {
+                        return Err(PolicyError::PolicyStoreConfigError(format!(
+                            "policy '{display_id}' cannot be assigned from its configured namespace references; add @{POLICY_STORE_ANNOTATION}(\"store-id\") or mark it global",
+                            POLICY_STORE_ANNOTATION = crate::POLICY_STORE_ANNOTATION
+                        )));
+                    }
+                    _ => {
+                        return Err(PolicyError::PolicyStoreConfigError(format!(
+                            "policy '{display_id}' has an ambiguous policy-store assignment"
+                        )));
+                    }
+                },
+                Some(ExplicitPolicyStore::Global) => {
+                    return Err(PolicyError::PolicyStoreConfigError(format!(
+                        "policy '{display_id}' has an inconsistent global assignment"
+                    )));
+                }
+            }
+        };
+
+        for target_index in target_indexes {
+            let target_id = layout.stores()[target_index].id();
+            let target = stores.get_mut(target_index).ok_or_else(|| {
+                PolicyError::PolicyStoreConfigError(format!(
+                    "policy '{display_id}' resolved to missing store '{target_id}'"
+                ))
+            })?;
+            target.add(policy.clone()).map_err(|error| {
+                PolicyError::PolicyStoreConfigError(format!(
+                    "failed to add policy '{display_id}' to store '{target_id}': {error}"
+                ))
+            })?;
+        }
+    }
+
+    let mut missing_global_policy_ids = layout
+        .global_policy_ids()
+        .difference(&found_global_policy_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_global_policy_ids.is_empty() {
+        missing_global_policy_ids.sort();
+        return Err(PolicyError::PolicyStoreConfigError(format!(
+            "global policy IDs were not found in the policy source: {}",
+            missing_global_policy_ids.join(", ")
+        )));
+    }
+
+    Ok(PolicySets::Scoped { layout, stores })
 }
 
 /// Extract all permit policies from the Cedar authorization result.
@@ -350,12 +545,35 @@ impl From<&PolicyEngine> for PolicyVersion {
 }
 
 impl PolicyEngine {
-    pub fn new_from_str(policy_text: &str) -> Result<Self, PolicyError> {
-        let snapshot: Snapshot = Arc::new(PolicySnapshot::from_policy_text(policy_text)?);
-        Ok(PolicyEngine {
-            inner: Arc::new(ArcSwap::from(snapshot)),
+    fn from_snapshot(snapshot: PolicySnapshot) -> Self {
+        Self {
+            inner: Arc::new(ArcSwap::from(Arc::new(snapshot))),
             label_registry: None,
-        })
+        }
+    }
+
+    pub fn new_from_str(policy_text: &str) -> Result<Self, PolicyError> {
+        Ok(Self::from_snapshot(PolicySnapshot::from_policy_text(
+            policy_text,
+        )?))
+    }
+
+    /// Create an engine that partitions policies into namespace-owned stores.
+    ///
+    /// Existing monolithic constructors remain unchanged. Store assignment is
+    /// validated before the engine is returned, and each request must resolve
+    /// to exactly one declared store or evaluation fails closed.
+    pub fn new_from_str_with_policy_stores(
+        policy_text: &str,
+        layout: PolicyStoreLayout,
+    ) -> Result<Self, PolicyError> {
+        Ok(Self::from_snapshot(
+            PolicySnapshot::from_policy_text_with_schema_and_stores(
+                policy_text,
+                None,
+                Some(layout),
+            )?,
+        ))
     }
 
     /// Create a new policy engine with schema-based policy and request validation.
@@ -363,14 +581,24 @@ impl PolicyEngine {
         policy_text: &str,
         schema: Schema,
     ) -> Result<Self, PolicyError> {
-        let snapshot: Snapshot = Arc::new(PolicySnapshot::from_policy_text_with_schema(
-            policy_text,
-            Some(Arc::new(schema)),
-        )?);
-        Ok(PolicyEngine {
-            inner: Arc::new(ArcSwap::from(snapshot)),
-            label_registry: None,
-        })
+        Ok(Self::from_snapshot(
+            PolicySnapshot::from_policy_text_with_schema(policy_text, Some(Arc::new(schema)))?,
+        ))
+    }
+
+    /// Create a namespace-partitioned engine with schema validation.
+    pub fn new_from_str_with_schema_and_policy_stores(
+        policy_text: &str,
+        schema: Schema,
+        layout: PolicyStoreLayout,
+    ) -> Result<Self, PolicyError> {
+        Ok(Self::from_snapshot(
+            PolicySnapshot::from_policy_text_with_schema_and_stores(
+                policy_text,
+                Some(Arc::new(schema)),
+                Some(layout),
+            )?,
+        ))
     }
 
     /// Create a new policy engine from policy text and Cedar schema text.
@@ -382,6 +610,18 @@ impl PolicyEngine {
             .parse()
             .map_err(|e| PolicyError::ParseError(format!("failed to parse Cedar schema: {e}")))?;
         Self::new_from_str_with_schema(policy_text, schema)
+    }
+
+    /// Create a namespace-partitioned engine from policy and Cedar schema text.
+    pub fn new_from_str_with_cedarschema_and_policy_stores(
+        policy_text: &str,
+        schema_text: &str,
+        layout: PolicyStoreLayout,
+    ) -> Result<Self, PolicyError> {
+        let schema: Schema = schema_text
+            .parse()
+            .map_err(|e| PolicyError::ParseError(format!("failed to parse Cedar schema: {e}")))?;
+        Self::new_from_str_with_schema_and_policy_stores(policy_text, schema, layout)
     }
 
     /// Create a new policy engine with a label registry.
@@ -408,10 +648,10 @@ impl PolicyEngine {
         let current_snapshot = self.current_snapshot();
         let had_schema = current_snapshot.schema.is_some();
         let schema = current_snapshot.schema.clone();
-        let new_snapshot: Snapshot = Arc::new(PolicySnapshot::from_policy_text_with_schema(
-            policy_text,
-            schema,
-        )?);
+        let layout = current_snapshot.sets.layout().cloned();
+        let new_snapshot: Snapshot = Arc::new(
+            PolicySnapshot::from_policy_text_with_schema_and_stores(policy_text, schema, layout)?,
+        );
         self.inner.store(new_snapshot);
         debug!(
             event = "PolicyReload",
@@ -430,11 +670,15 @@ impl PolicyEngine {
         policy_text: &str,
         schema: Schema,
     ) -> Result<(), PolicyError> {
-        let had_schema = self.current_snapshot().schema.is_some();
-        let new_snapshot: Snapshot = Arc::new(PolicySnapshot::from_policy_text_with_schema(
-            policy_text,
-            Some(Arc::new(schema)),
-        )?);
+        let current_snapshot = self.current_snapshot();
+        let had_schema = current_snapshot.schema.is_some();
+        let layout = current_snapshot.sets.layout().cloned();
+        let new_snapshot: Snapshot =
+            Arc::new(PolicySnapshot::from_policy_text_with_schema_and_stores(
+                policy_text,
+                Some(Arc::new(schema)),
+                layout,
+            )?);
         self.inner.store(new_snapshot);
         debug!(
             event = "PolicyReload",
@@ -473,6 +717,11 @@ impl PolicyEngine {
         self.current_snapshot().version()
     }
 
+    /// Return configured policy-store IDs, or `None` for a monolithic engine.
+    pub fn policy_store_ids(&self) -> Option<Vec<PolicyStoreId>> {
+        self.current_snapshot().sets.store_ids()
+    }
+
     /// Prepare a request for authorization: accumulate labels, build Cedar entities, resolve groups.
     ///
     /// This separates request preparation from the authorization decision, making both
@@ -483,6 +732,7 @@ impl PolicyEngine {
         request_context: Option<&RequestContext>,
     ) -> Result<PreparedRequest, PolicyError> {
         let snapshot = self.current_snapshot();
+        let selected_store = snapshot.sets.resolve_store(request)?;
         let schema = snapshot.schema();
         #[cfg(feature = "observability")]
         let sink = get_sink();
@@ -581,6 +831,7 @@ impl PolicyEngine {
             cedar_req,
             entities,
             snapshot,
+            selected_store,
             timers,
             #[cfg(feature = "observability")]
             sink,
@@ -692,11 +943,8 @@ impl PolicyEngine {
             let _timer = PhaseTimer::new_if(&mut prepared.timers.authz, measure_enabled);
             #[cfg(feature = "observability")]
             let _authz_span = info_span!("authorize").entered();
-            get_authorizer().is_authorized(
-                &prepared.cedar_req,
-                &prepared.snapshot.set,
-                &prepared.entities,
-            )
+            let policy_set = prepared.snapshot.sets.selected(prepared.selected_store)?;
+            get_authorizer().is_authorized(&prepared.cedar_req, policy_set, &prepared.entities)
         };
 
         if prepared.timers.debug_enabled {
@@ -967,44 +1215,49 @@ impl PolicyEngine {
         effect_filter: PolicyEffectFilter,
     ) -> Result<UserPolicies, PolicyError> {
         let snapshot = self.current_snapshot();
-        let policies = snapshot.set.policies();
         let resource_query = match resource {
             Some(resource) => Some(ResourceQuery::from_resource(resource)?),
             None => None,
         };
         let mut matching_policies: Vec<(Policy, Vec<PolicyMatchReason>)> = Vec::new();
+        let mut seen_policy_ids = HashSet::new();
 
-        for policy in policies {
-            if !matches_effect(policy.effect(), effect_filter) {
-                continue;
+        for set in snapshot.sets.iter() {
+            for policy in set.policies() {
+                if !seen_policy_ids.insert(policy.id().clone()) {
+                    continue;
+                }
+                if !matches_effect(policy.effect(), effect_filter) {
+                    continue;
+                }
+
+                let Some(principal_reason) =
+                    principal_match_reason(policy.principal_constraint(), principal)
+                else {
+                    continue;
+                };
+
+                let Some(action_reason) = action_match_reason(policy.action_constraint(), action)
+                else {
+                    continue;
+                };
+
+                let Some(resource_reason) =
+                    resource_match_reason(policy.resource_constraint(), resource_query.as_ref())
+                else {
+                    continue;
+                };
+
+                let mut reasons = vec![principal_reason];
+                if let Some(action_reason) = action_reason {
+                    reasons.push(action_reason);
+                }
+                if let Some(resource_reason) = resource_reason {
+                    reasons.push(resource_reason);
+                }
+
+                matching_policies.push((policy.clone(), reasons));
             }
-
-            let Some(principal_reason) =
-                principal_match_reason(policy.principal_constraint(), principal)
-            else {
-                continue;
-            };
-
-            let Some(action_reason) = action_match_reason(policy.action_constraint(), action)
-            else {
-                continue;
-            };
-
-            let Some(resource_reason) =
-                resource_match_reason(policy.resource_constraint(), resource_query.as_ref())
-            else {
-                continue;
-            };
-
-            let mut reasons = vec![principal_reason];
-            if let Some(action_reason) = action_reason {
-                reasons.push(action_reason);
-            }
-            if let Some(resource_reason) = resource_reason {
-                reasons.push(resource_reason);
-            }
-
-            matching_policies.push((policy.clone(), reasons));
         }
 
         Ok(UserPolicies::new_with_matches(
@@ -1015,7 +1268,21 @@ impl PolicyEngine {
 
     pub fn policies(&self) -> Result<Vec<Policy>, PolicyError> {
         let snapshot = self.current_snapshot();
-        Ok(snapshot.policy_set().policies().cloned().collect())
+        match &snapshot.sets {
+            PolicySets::Monolithic(set) => Ok(set.policies().cloned().collect()),
+            PolicySets::Scoped { .. } => {
+                let mut seen_policy_ids = HashSet::new();
+                let mut policies = snapshot
+                    .sets
+                    .iter()
+                    .flat_map(PolicySet::policies)
+                    .filter(|policy| seen_policy_ids.insert(policy.id().clone()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                policies.sort_by(|left, right| left.id().cmp(right.id()));
+                Ok(policies)
+            }
+        }
     }
 }
 

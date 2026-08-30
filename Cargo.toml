@@ -88,6 +88,10 @@ name = "evaluate_criterion_namespaced"
 harness = false
 
 [[bench]]
+name = "evaluate_criterion_policy_stores"
+harness = false
+
+[[bench]]
 name = "policy_scale_criterion"
 harness = false
 required-features = ["bench-internal"]
@@ -113,6 +117,10 @@ harness = false
 
 [[bench]]
 name = "evaluate_iai_namespaced"
+harness = false
+
+[[bench]]
+name = "evaluate_iai_policy_stores"
 harness = false
 
 [[bench]]

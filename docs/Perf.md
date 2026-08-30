@@ -25,6 +25,10 @@ current expectations, and initial measurements.
   builder.
 - `benches/evaluate_criterion_*.rs` contains the Criterion evaluation slices.
 - `benches/evaluate_iai_*.rs` contains the Gungraun evaluation slices.
+- `benches/evaluate_criterion_policy_stores.rs` compares a 2,048-policy
+  monolith with the equivalent 16-store layout whose selected store contains
+  128 policies. `evaluate_iai_policy_stores.rs` provides a smaller deterministic
+  instruction-level routing and evaluation probe.
 - `benches/bench_iai_*.rs` contains focused Gungraun benchmarks for internal hot
   paths.
 - `src/bench_helpers/policy_scale.rs` generates versioned deterministic scale
@@ -65,6 +69,13 @@ Run a default-feature evaluation slice:
 
 ```bash
 cargo bench --bench evaluate_criterion_baseline -- --noplot
+```
+
+Compare monolithic and namespace-partitioned evaluation for the fixed store
+fixture:
+
+```bash
+cargo bench --bench evaluate_criterion_policy_stores -- --noplot
 ```
 
 Run the same slice with observability enabled:

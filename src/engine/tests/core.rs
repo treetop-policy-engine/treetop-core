@@ -20,7 +20,7 @@ fn test_current_version_hash() {
 fn test_policysnapshot_policies() {
     let engine = PolicyEngine::new_from_str(TEST_POLICY).unwrap();
     let snapshot = engine.current_snapshot();
-    let policies = snapshot.policy_set();
+    let policies = snapshot.sets.iter().next().unwrap();
     assert_eq!(policies.policies().count(), 2);
 }
 

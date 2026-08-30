@@ -12,6 +12,7 @@ use yare::parameterized;
 
 mod reload;
 mod schema;
+mod stores;
 
 macro_rules! snapshot_decision_engine {
     ($decision:expr) => {{
