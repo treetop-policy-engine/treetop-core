@@ -110,7 +110,9 @@ compiled `PolicySet`. Store namespaces are declared explicitly; ordinary
 policies are assigned from namespaced entity references in their scope
 constraints and conditions, while configured global policies are copied into
 every store to preserve forbid precedence. Existing constructors remain
-monolithic, so partitioning is opt-in.
+monolithic, so partitioning is opt-in. The complete layout, annotation, routing,
+and reload contract is documented in
+[Policy-Store Design and Format](PolicyStores.md).
 
 Request routing uses a precomputed namespace trie, so its lookup work follows
 the action and resource namespace depth rather than scanning every store.
@@ -125,6 +127,31 @@ Large-store compilation, reload CPU, allocator retention, and concurrent traffic
 can also remain noisy neighbors in one process. Unknown or conflicting request
 namespaces fail closed rather than falling back to a different store or scanning
 for an allow decision.
+
+#### Enabling stores is a load-time opt-in
+
+Policy stores are always compiled into Treetop Core, but they are not enabled by
+a Cargo feature or a mutable per-request switch. Applications opt in when they
+construct an engine with one of the `new_from_str_with_*policy_stores`
+constructors and a trusted `PolicyStoreLayout`. Existing constructors continue
+to build one monolithic policy set. Reloads retain whichever layout was selected
+when the engine was constructed.
+
+An application configuration should therefore model this as an explicit loading
+mode, such as `monolithic` or `bundle-modules`, with `monolithic` as the
+backward-compatible default. A trusted bundle format can derive stores from its
+declared ordinary module namespaces and install policies from global modules in
+every store. Raw Cedar uploads should remain monolithic unless the application
+also supplies a trusted store layout; client-controlled request fields must
+never select or define store boundaries.
+
+Do not infer independence from only the action or resource constraint at the top
+of a policy. Principal constraints and `when` or `unless` expressions can refer
+to other namespaces, and organization-wide forbids must remain effective in
+every store. Core validates all configured namespace references during snapshot
+construction and rejects cross-store or unassigned policies. Applications
+should surface that load failure and retain the last-known-good snapshot rather
+than silently falling back to monolithic evaluation.
 
 ## Initial Baseline
 
