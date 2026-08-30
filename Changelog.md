@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in namespace-partitioned policy stores. Declared, non-overlapping
+  namespace roots assign ordinary policies and route requests to exactly one
+  compiled policy set; configured global policies are installed in every store.
+  Unscoped policies require an explicit `@treetop_store` assignment, unknown or
+  conflicting request namespaces fail closed, and atomic reloads preserve the
+  active store layout. Existing constructors and serialized decision shapes
+  remain unchanged and monolithic.
+- Added Criterion and Gungraun coverage for store routing and evaluation against
+  a selected subset of a larger organization-wide policy corpus.
+
 ## [0.0.22] - 2026-08-18
 
 ### Added

@@ -102,6 +102,30 @@ The deterministic corpus mixes permits, forbids, groups, exact constraints,
 resource conditions, annotations, and strict schema validation, but it cannot
 stand in for every production distribution.
 
+### Independent domains can use policy stores
+
+Namespace-partitioned policy stores let one `PolicyEngine` hold several
+independent authorization domains while evaluating a request against exactly one
+compiled `PolicySet`. Store namespaces are declared explicitly; ordinary
+policies are assigned from namespaced entity references in their scope
+constraints and conditions, while configured global policies are copied into
+every store to preserve forbid precedence. Existing constructors remain
+monolithic, so partitioning is opt-in.
+
+Request routing uses a precomputed namespace trie, so its lookup work follows
+the action and resource namespace depth rather than scanning every store.
+
+This changes request cost from the organization-wide policy count to the policy
+count in the selected store plus any global policies. Total steady-state memory
+still includes every store, and global policies consume memory in each store.
+Whole-engine policy inventory and listing APIs still inspect all stores and
+deduplicate global policies; partitioning targets authorization evaluation, not
+administrative scans.
+Large-store compilation, reload CPU, allocator retention, and concurrent traffic
+can also remain noisy neighbors in one process. Unknown or conflicting request
+namespaces fail closed rather than falling back to a different store or scanning
+for an allow decision.
+
 ## Initial Baseline
 
 These measurements were collected in release mode on a shared Linux host with
@@ -109,6 +133,15 @@ an Intel Xeon Silver 4216 at 2.10 GHz, 16 physical cores/32 threads, Rust 1.97.1
 and Cedar 4.12.0. They are reference observations, not enforced thresholds. The
 scheduled workflow uses the project's Rust 1.93.1 MSRV, so its results should be
 compared within that environment rather than directly against this local run.
+
+### Policy-Store Evaluation Reference
+
+The fixed policy-store Criterion fixture contains 2,048 policies divided evenly
+across 16 namespaces. A request selecting one 128-policy store includes routing
+time in the measured evaluation. On the reference host, the monolithic engine's
+median estimate was 3.098 ms and the partitioned engine's was 214.12 us, about
+14.5 times lower for this corpus. This result demonstrates the intended scaling
+shape; it is not a universal multiplier for other policy or request mixes.
 
 ### Scaling Probe
 
@@ -256,11 +289,11 @@ The initial measurements point to five work streams:
    maps independently. Evaluate compact or lazy metadata representations without
    moving serialization back onto every allow decision or changing public
    response shapes accidentally.
-3. **Authorization candidate work.** Determine whether Cedar or Treetop can
-   safely narrow the policies considered for a request. Any indexing or
-   partitioning must preserve forbid precedence, group semantics, conditions,
-   and fail-closed behavior. Never select an authorization shard using
-   untrusted client assertions.
+3. **Authorization candidate work.** Measure namespace-partitioned policy stores
+   against representative production distributions, and investigate finer
+   candidate indexing within stores. Partitioning must continue to preserve
+   forbid precedence, group semantics, conditions, and fail-closed behavior.
+   Never select an authorization store using untrusted client assertions.
 4. **Concurrent throughput and tails.** Add controlled 1/2/4/8/16-thread tests
    for throughput, p95/p99 latency, memory bandwidth, and observability-enabled
    behavior. Single-thread medians are insufficient for service capacity.

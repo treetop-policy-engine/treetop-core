@@ -242,6 +242,50 @@ Reload logging:
 - reload operations emit a `PolicyReload` debug event
 - fields include `schema_enabled`, `schema_reloaded`, and when relevant `schema_previously_enabled`
 
+## Namespace-Partitioned Policy Stores
+
+Large independent authorization domains can opt into policy stores while the
+existing constructors remain monolithic. Treetop assigns ordinary policies from
+their namespaced action, resource, and condition references, and routes each
+request to exactly one store using the same namespace ownership rules:
+
+```rust
+use treetop_core::{PolicyEngine, PolicyStoreConfig, PolicyStoreLayout};
+
+let layout = PolicyStoreLayout::new([
+    PolicyStoreConfig::new("dns", "ExampleCo::DNS").unwrap(),
+    PolicyStoreConfig::new("www", "ExampleCo::WWW").unwrap(),
+])
+.unwrap()
+.with_global_policy_ids(["organization.suspended"])
+.unwrap();
+
+let engine = PolicyEngine::new_from_str_with_policy_stores(policies, layout).unwrap();
+```
+
+Store namespaces must be explicit, unique, and non-overlapping. A typo cannot
+silently create a store. A policy that identifies one store is installed only in
+that store. Registered global policies and policies annotated with
+`@treetop_store("*")` are installed in every store so Cedar's forbid precedence
+is preserved. An otherwise unscoped policy can be assigned explicitly:
+
+Entity namespaces outside every declared store, such as shared `User` and
+`Group` types, do not select a store and can be used by policies in every store.
+
+```cedar
+@id("dns.emergency-lock")
+@treetop_store("dns")
+forbid (principal, action, resource)
+when { context.emergencyLockdown };
+```
+
+Evaluation fails with `PolicyStoreRoutingError` when the request belongs to no
+store or its action and resource identify different stores. Store selection is
+therefore an authorization boundary: construct action and resource identities
+from authenticated, application-controlled state. Reloads through
+`reload_from_str*` retain the configured layout and publish a fully validated,
+fully partitioned replacement atomically.
+
 ## Groups
 
 Groups are listed as the principal entity type `Group`, and to permit access to member of a group, you can use the `in` operator. If you say `principal in Group::"admins"`, it will match any principal that is a member of the group `admins`, but if you say `principal == Group::"admins"`, it will only match the group itself, not its members. You will almost always want to use the `in` operator when dealing with groups...

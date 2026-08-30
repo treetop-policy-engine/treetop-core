@@ -40,6 +40,14 @@ pub enum PolicyError {
     /// Entity attribute evaluation or access error.
     #[error("entity attribute error: {0}")]
     EntityAttrError(String),
+
+    /// A policy-store layout or policy assignment is invalid.
+    #[error("policy-store configuration error: {0}")]
+    PolicyStoreConfigError(String),
+
+    /// A request cannot be routed to exactly one configured policy store.
+    #[error("policy-store routing error: {0}")]
+    PolicyStoreRoutingError(String),
 }
 
 impl From<RequestValidationError> for PolicyError {
