@@ -153,9 +153,10 @@ pub fn no_match_request() -> Request {
 
 fn request(groups: Option<Vec<String>>, action: &str) -> Request {
     Request {
-        principal: Principal::User(User::new(TARGET_USER, groups, None)),
-        action: Action::new(action, None),
+        principal: Principal::User(User::new(TARGET_USER, groups, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource: Resource::new("Document", TARGET_DOCUMENT)
+            .unwrap()
             .with_attr("classification", AttrValue::String("public".to_string())),
     }
 }

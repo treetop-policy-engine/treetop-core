@@ -3,7 +3,7 @@
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use utoipa::ToSchema;
 
 use crate::error::PolicyError;
@@ -15,16 +15,44 @@ use super::qualified_id::UserId;
 use super::resource::split_string_into_cedar_parts;
 
 /// A user principal, possibly with a namespace (e.g. Application::User::"alice").
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq, Eq, Hash)]
 pub struct User {
     #[serde(flatten)]
     id: UserId,
     groups: Groups,
 }
 
+#[derive(Deserialize)]
+struct UserRepr {
+    #[serde(flatten)]
+    id: UserId,
+    groups: Groups,
+}
+
+impl<'de> Deserialize<'de> for User {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let repr = UserRepr::deserialize(deserializer)?;
+        if (&repr.groups)
+            .into_iter()
+            .any(|group| group.id().namespace() != repr.id.namespace())
+        {
+            return Err(D::Error::custom(
+                "user and group namespaces must be identical",
+            ));
+        }
+        Ok(Self {
+            id: repr.id,
+            groups: repr.groups,
+        })
+    }
+}
+
 impl Display for User {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}", self.id.fmt_qualified(Self::cedar_type()))
+        write!(f, "{}", self.id.fmt_qualified())
     }
 }
 
@@ -49,11 +77,11 @@ impl User {
         id: T,
         groups: Option<Vec<String>>,
         namespace: Option<Vec<String>>,
-    ) -> Self {
-        User {
-            id: UserId::new(id, namespace.clone()),
-            groups: Groups::new(groups.unwrap_or_default(), namespace),
-        }
+    ) -> Result<Self, PolicyError> {
+        Ok(User {
+            id: UserId::new(id, namespace.clone())?,
+            groups: Groups::new(groups.unwrap_or_default(), namespace)?,
+        })
     }
 
     pub fn groups(&self) -> &Groups {
@@ -66,12 +94,13 @@ impl CedarAtom for User {
         CedarType::User.as_ref()
     }
 
+    #[cfg(test)]
     fn cedar_id(&self) -> String {
-        self.id.fmt_qualified(Self::cedar_type())
+        self.id.fmt_qualified()
     }
 
-    fn cedar_entity_uid(&self) -> Result<cedar_policy::EntityUid, PolicyError> {
-        self.id.cedar_entity_uid(Self::cedar_type())
+    fn cedar_entity_uid(&self) -> &cedar_policy::EntityUid {
+        self.id.cedar_entity_uid()
     }
 }
 
@@ -93,13 +122,7 @@ impl FromStr for User {
             _ => {}
         }
 
-        if let Some(groups) = &groups {
-            for group in groups {
-                super::Group::new(group, parts.namespace.clone()).cedar_entity_uid()?;
-            }
-        }
-
-        Ok(User::new(parts.id, groups, parts.namespace))
+        User::new(parts.id, groups, parts.namespace)
     }
 }
 
@@ -203,7 +226,7 @@ mod tests {
             user_str
         };
 
-        assert_eq!(user.id.fmt_qualified("User"), quote_last_element(target));
+        assert_eq!(user.id.fmt_qualified(), quote_last_element(target));
 
         assert_eq!(user.id.id(), expected_id);
         assert_eq!(
@@ -237,7 +260,7 @@ mod tests {
         let groups = some_str_to_string(expected_groups);
         let namespaces = some_str_to_string(expected_namespace);
 
-        let user = User::new(user_str, groups, namespaces);
+        let user = User::new(user_str, groups, namespaces).unwrap();
         let serialized = serde_json::to_value(&user).unwrap();
         let deserialized: User = serde_json::from_value(serialized.clone()).unwrap();
         assert_eq!(user.id, deserialized.id);
@@ -309,5 +332,18 @@ mod tests {
     fn test_fromstr_namespace_with_numbers() {
         let user = User::from_str("NS1::NS2::User::alice").unwrap();
         assert_eq!(user.id.namespace(), &["NS1".to_string(), "NS2".to_string()]);
+    }
+
+    #[test]
+    fn deserialization_rejects_mismatched_group_namespace() {
+        let value = serde_json::json!({
+            "id": "alice",
+            "namespace": ["App"],
+            "groups": [{
+                "id": "admins",
+                "namespace": ["Other"]
+            }]
+        });
+        assert!(serde_json::from_value::<User>(value).is_err());
     }
 }

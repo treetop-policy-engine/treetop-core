@@ -9,10 +9,9 @@ use treetop_core::bench_helpers::policy_scale::{
 use treetop_core::{Decision, PolicyEngine, Schema, compile_policy, compile_policy_with_schema};
 
 fn decision_score(decision: Decision) -> usize {
-    match decision {
-        Decision::Allow { policies, .. } => policies.len(),
-        Decision::Deny { .. } => 0,
-    }
+    decision
+        .permit_policies()
+        .map_or(0, |policies| policies.len())
 }
 
 fn benchmark_policy_scale(c: &mut Criterion) {
@@ -132,9 +131,7 @@ fn benchmark_policy_scale(c: &mut Criterion) {
     });
     query_group.bench_function(BenchmarkId::new("clone_all_policies", &parameter), |b| {
         b.iter(|| {
-            let policies = engine
-                .policies()
-                .expect("benchmark policy cloning should succeed");
+            let policies = engine.policies();
             black_box(policies.len());
         });
     });

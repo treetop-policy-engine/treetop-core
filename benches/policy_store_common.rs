@@ -33,9 +33,9 @@ pub fn build_policy_store_scenario(
     let scoped = PolicyEngine::new_from_str_with_policy_stores(&policy_text, layout)
         .expect("benchmark policies must partition");
     let request = Request {
-        principal: Principal::User(User::new("target", None, None)),
-        action: Action::new("read-0", Some(vec!["Store0".to_string()])),
-        resource: Resource::new("Store0::Document", "document-0"),
+        principal: Principal::User(User::new("target", None, None).unwrap()),
+        action: Action::new("read-0", Some(vec!["Store0".to_string()])).unwrap(),
+        resource: Resource::new("Store0::Document", "document-0").unwrap(),
     };
 
     PolicyStoreScenario {

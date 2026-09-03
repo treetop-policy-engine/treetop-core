@@ -17,13 +17,7 @@ fn exercise_scale_corpus(policy_count: usize) {
             .expect("generated scale corpus should load with strict schema validation");
     let load_elapsed = load_started.elapsed();
 
-    assert_eq!(
-        engine
-            .policies()
-            .expect("loaded policies should list")
-            .len(),
-        corpus.policy_count
-    );
+    assert_eq!(engine.policies().len(), corpus.policy_count);
 
     let read_request = allow_request();
     let read = engine
@@ -35,9 +29,9 @@ fn exercise_scale_corpus(policy_count: usize) {
     let delete = engine
         .evaluate_with_diagnostics(&delete_request)
         .expect("scale delete request should evaluate");
-    assert!(matches!(delete.decision, Decision::Deny { .. }));
+    assert!(matches!(delete.decision(), Decision::Deny { .. }));
     assert_eq!(
-        delete.matched_forbid_policy_ids,
+        delete.matched_forbid_policy_ids(),
         ["scale.target.delete_forbid"]
     );
 
@@ -102,7 +96,7 @@ fn generated_corpus_is_deterministic_and_has_exact_policy_count() {
     let engine =
         PolicyEngine::new_from_str_with_cedarschema(&first.policy_text, &first.schema_text)
             .expect("small generated corpus should load");
-    assert_eq!(engine.policies().unwrap().len(), first.policy_count);
+    assert_eq!(engine.policies().len(), first.policy_count);
 }
 
 #[test]
@@ -118,9 +112,9 @@ fn shared_request_cases_keep_their_authorization_outcomes() {
     ));
 
     let forbid = engine.evaluate_with_diagnostics(&forbid_request()).unwrap();
-    assert!(matches!(forbid.decision, Decision::Deny { .. }));
+    assert!(matches!(forbid.decision(), Decision::Deny { .. }));
     assert_eq!(
-        forbid.matched_forbid_policy_ids,
+        forbid.matched_forbid_policy_ids(),
         ["scale.target.delete_forbid"]
     );
 

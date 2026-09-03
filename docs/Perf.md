@@ -25,6 +25,9 @@ current expectations, and initial measurements.
   builder.
 - `benches/evaluate_criterion_*.rs` contains the Criterion evaluation slices.
 - `benches/evaluate_iai_*.rs` contains the Gungraun evaluation slices.
+- `evaluate_criterion_sessions.rs` and `evaluate_iai_sessions.rs` compare live
+  engine evaluation with a captured `EvaluationSession`. They are separate
+  targets so new session cases cannot alter historical baseline aggregates.
 - `benches/evaluate_criterion_policy_stores.rs` compares a 2,048-policy
   monolith with the equivalent 16-store layout whose selected store contains
   128 policies. `evaluate_iai_policy_stores.rs` provides a smaller deterministic
@@ -71,6 +74,13 @@ Run a default-feature evaluation slice:
 cargo bench --bench evaluate_criterion_baseline -- --noplot
 ```
 
+Compare live and captured-session evaluation without changing the baseline
+target:
+
+```bash
+cargo bench --bench evaluate_criterion_sessions -- --noplot
+```
+
 Compare monolithic and namespace-partitioned evaluation for the fixed store
 fixture:
 
@@ -111,6 +121,12 @@ Gungraun requires Linux, Valgrind, and the runner version matching the crate:
 ```bash
 cargo install --locked gungraun-runner --version 0.19.4
 cargo bench --bench evaluate_iai_baseline
+```
+
+Run the focused live-versus-session instruction comparison:
+
+```bash
+cargo bench --bench evaluate_iai_sessions
 ```
 
 Run an internal hot-path target with the required feature:

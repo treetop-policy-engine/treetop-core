@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `EvaluationSession`, which retains one immutable generation of policies,
+  schema, policy-store layout, label registry, and version for coherent batch
+  evaluation across concurrent reloads.
+- Added schema-state markers. Schema constructors now return
+  `PolicyEngine<SchemaEnforcing>`; schema-free constructors return
+  `PolicyEngine<SchemaFree>`, which has no schema-replacing reload operation.
+- Added `DecisionDto` for explicitly non-authoritative serialized decision data,
+  `CedarIp` for validated Cedar IP values, and `LabelSetVersion` for identifying
+  complete trusted label configurations.
+
+### Security
+
+- Entity IDs, resource kinds, namespaces, group membership, IP values, and
+  label-registry configuration are now validated at construction and
+  deserialization boundaries. Validated Cedar entity UIDs are retained in the
+  typed request values so evaluation does not reparse them.
+- `Decision` and `DecisionDiagnostics` are now engine-issued authorization
+  evidence: non-exhaustive variants prevent callers from constructing decisions,
+  and the types no longer implement `Deserialize`. Serialize
+  `DecisionDto::from(&decision)` when a wire form is needed, and re-evaluate the
+  concrete request instead of trusting received DTOs.
+- Policy and label reloads now publish one complete immutable engine state with
+  a monotonic generation. `PolicyVersion` includes that generation and the
+  optional label-set version, preventing a decision from reporting policy-only
+  metadata for a mixed authorization state.
+- Labelers now implement read-only `derive` logic for one declared output.
+  Receiver-style `labeler.apply(&mut resource)` remains available through the
+  non-overridable blanket `LabelerApply` implementation, which replaces or
+  removes caller-provided output values. Registries reject invalid, reserved,
+  and duplicate output ownership.
+
+### Changed
+
+- **BREAKING**: `User::new`, `Group::new`, `Groups::new`, `Action::new`,
+  `Action::without_namespace`, and `Resource::new` now return `Result`. Handle
+  malformed authorization identities at the application boundary.
+- **BREAKING**: `AttrValue::Ip` now contains `CedarIp`; migrate string inputs to
+  `AttrValue::ip(value)?` or `CedarIp::new(value)?`.
+- **BREAKING**: `Labeler` implementations now provide `output` and `derive`
+  instead of arbitrary mutation. `RegexLabeler::new` and
+  `LabelRegistryBuilder::build` are fallible. Use
+  `LabelRegistryBuilder::versioned` only when decisions need a stable
+  label-configuration identifier across processes or restarts. Replace
+  `LabelRegistry::reload` with a newly built registry passed to
+  `PolicyEngine::set_label_registry`; the update now applies coherently to every
+  clone of that engine.
+- **BREAKING**: Schema-replacing reloads are only available on
+  `PolicyEngine<SchemaEnforcing>`. Create a new schema-enforcing engine rather
+  than changing a schema-free engine's validation mode in place.
+- **BREAKING**: Removed `FromDecisionWithPolicy`; decisions are constructed only
+  by evaluation. `Decision` and `DecisionDto` are now non-exhaustive; prefer
+  accessors such as `is_allowed`, `version`, and `permit_policies`. Serialized
+  `PolicyVersion` values now include `label_set` and `generation`.
+- **BREAKING**: `DecisionDiagnostics` fields are private; use `decision()`,
+  `into_decision()`, and `matched_forbid_policy_ids()` so diagnostics cannot be
+  assembled into forged authorization evidence.
+- Renamed policy-listing results to `PolicyCandidates`, `actions()` to
+  `candidate_actions()`, and `actions_by_name()` to
+  `candidate_actions_by_name()` to make their non-authoritative semantics
+  explicit. The old names remain deprecated migration aliases.
+- `PolicyEngine::policies()` now returns `Vec<Policy>` directly because reading
+  policies from an already validated state cannot fail.
+
+### Performance
+
+- Moved Cedar UID and IP validation out of evaluation, kept engine-state reads
+  lock-free through one `ArcSwap` load, and retained the no-label fast path that
+  avoids cloning resources. Evaluation sessions reuse a captured state and
+  avoid repeated atomic state loads.
+- Added dedicated Criterion and Gungraun session-evaluation targets so their
+  measurements do not change the historical baseline aggregates.
+
 ## [0.0.23] - 2026-08-30
 
 ### Added

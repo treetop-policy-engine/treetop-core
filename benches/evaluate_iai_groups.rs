@@ -10,10 +10,9 @@ use treetop_core::Decision;
 const IAI_INNER_ITERS: usize = 1_000;
 
 fn score(decision: Decision) -> usize {
-    match decision {
-        Decision::Allow { policies, .. } => policies.len(),
-        Decision::Deny { .. } => 0,
-    }
+    decision
+        .permit_policies()
+        .map_or(0, |policies| policies.len())
 }
 
 fn run_many(scenario: &Scenario) -> usize {

@@ -208,11 +208,7 @@ fn main() {
     );
     let clone_all = measure_latency(
         || {
-            black_box(
-                engine
-                    .policies()
-                    .expect("probe policy cloning should succeed"),
-            );
+            black_box(engine.policies());
         },
         samples,
     );

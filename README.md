@@ -101,7 +101,7 @@ permit (
 ```rust
  use regex::Regex;
  use std::sync::Arc;
- use treetop_core::{Action, AttrValue, PolicyEngine, Request, Decision, User, Principal, Resource, RegexLabeler, LabelRegistryBuilder};
+ use treetop_core::{Action, AttrValue, DecisionDto, LabelRegistryBuilder, PolicyEngine, Principal, RegexLabeler, Request, Resource, User};
 
  let policies = r#"
  permit (
@@ -126,38 +126,104 @@ permit (
          "name",
          "nameLabels",
          patterns.into_iter().collect(),
-     )))
-     .build();
+     ).unwrap()))
+     .build()
+     .unwrap();
 
  let engine = PolicyEngine::new_from_str(&policies).unwrap()
      .with_label_registry(label_registry);
 
  let request = Request {
-    principal: Principal::User(User::new("alice", None, None)), // No groups, no namespace
-    action: Action::new("create_host", None), // Action is not in a namespace
-    resource: Resource::new("Host", "hostname.example.com")
+    principal: Principal::User(User::new("alice", None, None).unwrap()), // No groups, no namespace
+    action: Action::new("create_host", None).unwrap(), // Action is not in a namespace
+    resource: Resource::new("Host", "hostname.example.com").unwrap()
      .with_attr("name", AttrValue::String("hostname.example.com".into()))
-     .with_attr("ip", AttrValue::Ip("10.0.0.1".into()))
+     .with_attr("ip", AttrValue::ip("10.0.0.1").unwrap())
  };
 
  let decision = engine.evaluate(&request).unwrap();
- assert!(matches!(decision, Decision::Allow { .. }));
+ assert!(decision.is_allowed());
 
  // Access policy version information
- if let Decision::Allow { version, .. } = &decision {
-     println!("Policy hash: {}", version.hash);
-     println!("Policy loaded at: {}", version.loaded_at);
- }
+ let version = decision.version();
+ println!("Policy hash: {}", version.hash);
+ println!("Policy loaded at: {}", version.loaded_at);
+ println!("Engine generation: {}", version.generation);
+
+ // DecisionDto is suitable for serialization but is not authorization proof.
+ let wire_decision = DecisionDto::from(&decision);
+ let _json = serde_json::to_string(&wire_decision).unwrap();
 
  // List alice's candidate policies, assuming no groups and no namespaces
- let policies = engine.list_policies_for_user("alice", &[], &[]).unwrap();
+ let candidates = engine.list_policies_for_user("alice", &[], &[]).unwrap();
  // This value is also serializable to JSON
- let json = serde_json::to_string(&policies).unwrap();
+ let json = serde_json::to_string(&candidates).unwrap();
 ```
 
 Policy-listing methods return structurally matched permit candidates, not an authorization decision. They do not evaluate Cedar `when` or `unless` clauses. Always call `PolicyEngine::evaluate` for the concrete request before granting access.
 
 Principal IDs, group membership, resource attributes, and request context are authorization inputs. Populate them from authenticated, server-controlled state rather than accepting client assertions directly.
+
+## Type-Driven Authorization Boundaries
+
+Treetop validates identities when they enter the typed API. `User::new`,
+`Group::new`, `Action::new`, and `Resource::new` reject empty or malformed Cedar
+identities, and `AttrValue::ip` rejects invalid IP values. Deserialization uses
+the same validation path, so wire data cannot create states that ordinary
+constructors reject.
+
+An evaluated `Decision` is deliberately engine-issued and cannot be
+deserialized or safely constructed by callers. Convert it to `DecisionDto` for
+storage or transport, but never treat a DTO received from elsewhere as proof of
+authorization.
+
+Policies, schemas, policy-store layouts, and label registries are
+published as one immutable engine generation. Capture a session when several
+evaluations must use exactly the same generation, even if the live engine is
+reloaded concurrently:
+
+```rust
+let session = engine.session();
+let version = session.version();
+let first = session.evaluate(&request).unwrap();
+let second = session.evaluate(&request).unwrap();
+
+assert_eq!(first.version(), &version);
+assert_eq!(second.version(), &version);
+```
+
+Use `LabelRegistryBuilder::versioned("host-labels-v1")` when decisions need a
+stable label-configuration identifier for audit correlation across processes or
+restarts. `LabelRegistryBuilder::new()` avoids that naming requirement; the
+engine generation still distinguishes registry replacements within one engine.
+
+Custom labelers retain receiver-style application. Implementations only derive
+one declared output from an immutable resource; the blanket `LabelerApply`
+implementation owns replace-or-remove mutation, so it cannot be overridden by
+an individual labeler:
+
+```rust
+use treetop_core::{AttrValue, Labeler, LabelerApply, Resource};
+
+struct EnvironmentLabeler;
+
+impl Labeler for EnvironmentLabeler {
+    fn applies_to(&self, kind: &str) -> bool {
+        kind == "Host"
+    }
+
+    fn output(&self) -> &str {
+        "environment"
+    }
+
+    fn derive(&self, resource: &Resource) -> Option<AttrValue> {
+        resource.id().ends_with(".prod").then(|| AttrValue::String("prod".into()))
+    }
+}
+
+let mut resource = Resource::new("Host", "api.prod").unwrap();
+EnvironmentLabeler.apply(&mut resource);
+```
 
 If your Cedar policies use `context`, pass it explicitly at evaluation time:
 
@@ -179,8 +245,11 @@ Conceptually, `context` and entity attributes solve different problems:
 
 ## Cedar Schema Validation
 
-Schema validation is optional and opt-in. Existing `PolicyEngine::new_from_str(...)`
-and `reload_from_str(...)` behavior is unchanged and remains schema-free.
+Schema validation is optional and opt-in. `PolicyEngine::new_from_str(...)`
+returns `PolicyEngine<SchemaFree>`, while schema constructors return
+`PolicyEngine<SchemaEnforcing>`. A schema-free engine has no schema-replacing
+reload method, so schema enforcement cannot be enabled accidentally after
+construction. Normal `reload_from_str(...)` calls preserve the engine's mode.
 
 When you want schema enforcement:
 
@@ -305,11 +374,11 @@ This is then queried as follows in a request:
 
 ```rust
 let request = Request {
-   principal: Principal::User(User::new("alice", None, None)),
-   action: Action::new("manage_hosts", None),
-   resource: Resource::new("Host", "hostname.example.com")
+   principal: Principal::User(User::new("alice", None, None).unwrap()),
+   action: Action::new("manage_hosts", None).unwrap(),
+   resource: Resource::new("Host", "hostname.example.com").unwrap()
     .with_attr("name", AttrValue::String("hostname.example.com".into()))
-    .with_attr("ip", AttrValue::Ip("10.0.0.1".into()))
+    .with_attr("ip", AttrValue::ip("10.0.0.1").unwrap())
 };
 ```
 
@@ -333,9 +402,9 @@ This can be queried with the following request:
 
 ```rust
 Request {
-   principal: Principal::User(User::new("alice", None, None)),
-   action: Action::new("build_house", None),
-   resource: Resource::new("House", "house-1")
+   principal: Principal::User(User::new("alice", None, None).unwrap()),
+   action: Action::new("build_house", None).unwrap(),
+   resource: Resource::new("House", "house-1").unwrap()
 };
 ```
 

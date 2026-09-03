@@ -46,9 +46,9 @@ fn test_concurrent_evaluation() {
         let handle = thread::spawn(move || {
             for _ in 0..100 {
                 let request = Request {
-                    principal: Principal::User(User::new("alice", None, None)),
-                    action: Action::new("read", None),
-                    resource: Resource::new("Document", format!("doc{}", i % 5)),
+                    principal: Principal::User(User::new("alice", None, None).unwrap()),
+                    action: Action::new("read", None).unwrap(),
+                    resource: Resource::new("Document", format!("doc{}", i % 5)).unwrap(),
                 };
                 let decision = engine_clone.evaluate(&request);
                 assert!(decision.is_ok());
@@ -67,12 +67,13 @@ fn test_concurrent_label_registry_access() {
     use std::thread;
 
     let patterns = vec![("test_label".to_string(), Regex::new(r"test").unwrap())];
-    let labeler = RegexLabeler::new("Host", "name", "nameLabels", patterns);
+    let labeler = RegexLabeler::new("Host", "name", "nameLabels", patterns).unwrap();
 
     let label_registry = Arc::new(
-        LabelRegistryBuilder::new()
+        LabelRegistryBuilder::versioned("concurrency-v1")
             .add_labeler(Arc::new(labeler))
-            .build(),
+            .build()
+            .unwrap(),
     );
 
     let mut handles = vec![];
@@ -82,6 +83,7 @@ fn test_concurrent_label_registry_access() {
         let registry = Arc::clone(&label_registry);
         let handle = thread::spawn(move || {
             let mut resource = Resource::new("Host", format!("test-{}", i))
+                .unwrap()
                 .with_attr("name", AttrValue::String(format!("test-{}", i)));
 
             registry.apply(&mut resource);
@@ -141,9 +143,9 @@ fn test_empty_policy_text() {
 
     let engine = result.unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "doc1"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "doc1").unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -159,13 +161,15 @@ fn test_whitespace_only_policy() {
 #[test]
 fn test_label_registry_initialization() {
     let patterns1 = vec![("label1".to_string(), Regex::new(r"test1").unwrap())];
-    let labeler1 = RegexLabeler::new("Host", "name", "nameLabels", patterns1);
+    let labeler1 = RegexLabeler::new("Host", "name", "nameLabels", patterns1).unwrap();
 
-    let label_registry = LabelRegistryBuilder::new()
+    let label_registry = LabelRegistryBuilder::versioned("initial-v1")
         .add_labeler(Arc::new(labeler1))
-        .build();
+        .build()
+        .unwrap();
 
     let mut resource = Resource::new("Host", "test1-host")
+        .unwrap()
         .with_attr("name", AttrValue::String("test1-host".into()));
 
     label_registry.apply(&mut resource);
@@ -178,10 +182,12 @@ fn test_label_registry_initialization() {
 #[test]
 fn test_apply_labels_with_no_labelers() {
     // Test that an empty registry doesn't panic
-    let label_registry = LabelRegistryBuilder::new().build();
+    let label_registry = LabelRegistryBuilder::new().build().unwrap();
+    assert!(label_registry.version().is_none());
 
-    let mut resource =
-        Resource::new("Host", "test-host").with_attr("name", AttrValue::String("test-host".into()));
+    let mut resource = Resource::new("Host", "test-host")
+        .unwrap()
+        .with_attr("name", AttrValue::String("test-host".into()));
 
     // Should not panic with no labelers
     label_registry.apply(&mut resource);
@@ -193,20 +199,28 @@ fn test_apply_labels_with_no_labelers() {
 #[test]
 fn test_label_registry_replacement() {
     let patterns1 = vec![("old_label".to_string(), Regex::new(r"old").unwrap())];
-    let labeler1 = RegexLabeler::new("Host", "name", "nameLabels", patterns1);
+    let labeler1 = RegexLabeler::new("Host", "name", "nameLabels", patterns1).unwrap();
 
-    let label_registry = LabelRegistryBuilder::new()
+    let old_registry = LabelRegistryBuilder::versioned("replacement-v1")
         .add_labeler(Arc::new(labeler1))
-        .build();
+        .build()
+        .unwrap();
 
     let patterns2 = vec![("new_label".to_string(), Regex::new(r"new").unwrap())];
-    let labeler2 = RegexLabeler::new("Host", "name", "nameLabels", patterns2);
+    let labeler2 = RegexLabeler::new("Host", "name", "nameLabels", patterns2).unwrap();
 
-    // Replace labelers via reload
-    label_registry.reload(vec![Arc::new(labeler2)]);
+    let label_registry = LabelRegistryBuilder::versioned("replacement-v2")
+        .add_labeler(Arc::new(labeler2))
+        .build()
+        .unwrap();
+    assert_eq!(
+        old_registry.version().map(|version| version.as_str()),
+        Some("replacement-v1")
+    );
 
-    let mut resource =
-        Resource::new("Host", "new-host").with_attr("name", AttrValue::String("new-host".into()));
+    let mut resource = Resource::new("Host", "new-host")
+        .unwrap()
+        .with_attr("name", AttrValue::String("new-host".into()));
 
     label_registry.apply(&mut resource);
 
@@ -221,6 +235,61 @@ fn test_label_registry_replacement() {
         });
         assert!(has_new);
     }
+}
+
+#[test]
+fn evaluation_session_freezes_policy_and_label_generation() {
+    fn registry(version: &str, label: &str) -> LabelRegistry {
+        let labeler = RegexLabeler::new(
+            "Host",
+            "name",
+            "labels",
+            vec![(label.to_string(), Regex::new(".*").unwrap())],
+        )
+        .unwrap();
+        LabelRegistryBuilder::versioned(version)
+            .add_labeler(Arc::new(labeler))
+            .build()
+            .unwrap()
+    }
+
+    let policy_v1 = r#"
+        permit (principal, action, resource is Host)
+        when { resource.labels.contains("v1") };
+    "#;
+    let policy_v2 = r#"
+        permit (principal, action, resource is Host)
+        when { resource.labels.contains("v2") };
+    "#;
+    let engine = PolicyEngine::new_from_str(policy_v1)
+        .unwrap()
+        .with_label_registry(registry("labels-v1", "v1"));
+    let request = Request {
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Host", "web-01")
+            .unwrap()
+            .with_attr("name", AttrValue::String("web-01".into())),
+    };
+
+    let session = engine.session();
+    assert_eq!(
+        session.version().label_set.as_ref().unwrap().as_str(),
+        "labels-v1"
+    );
+    assert!(session.evaluate(&request).unwrap().is_allowed());
+
+    engine.set_label_registry(registry("labels-v2", "v2"));
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
+    assert!(session.evaluate(&request).unwrap().is_allowed());
+    assert_ne!(
+        session.version().generation,
+        engine.current_version().generation
+    );
+
+    engine.reload_from_str(policy_v2).unwrap();
+    assert!(engine.evaluate(&request).unwrap().is_allowed());
+    assert!(session.evaluate(&request).unwrap().is_allowed());
 }
 
 #[test]
@@ -244,9 +313,9 @@ fn test_large_policy_set() {
 
     // Test evaluation still works
     let request = Request {
-        principal: Principal::User(User::new("user50", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "doc50"),
+        principal: Principal::User(User::new("user50", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "doc50").unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -266,17 +335,20 @@ fn test_deeply_nested_namespaces() {
     let engine = PolicyEngine::new_from_str(policies).unwrap();
 
     let request = Request {
-        principal: Principal::User(User::new(
-            "alice",
-            None,
-            Some(vec![
-                "A".into(),
-                "B".into(),
-                "C".into(),
-                "D".into(),
-                "E".into(),
-            ]),
-        )),
+        principal: Principal::User(
+            User::new(
+                "alice",
+                None,
+                Some(vec![
+                    "A".into(),
+                    "B".into(),
+                    "C".into(),
+                    "D".into(),
+                    "E".into(),
+                ]),
+            )
+            .unwrap(),
+        ),
         action: Action::new(
             "read",
             Some(vec![
@@ -286,8 +358,9 @@ fn test_deeply_nested_namespaces() {
                 "D".into(),
                 "E".into(),
             ]),
-        ),
-        resource: Resource::new("A::B::C::D::E::Document", "doc1"),
+        )
+        .unwrap(),
+        resource: Resource::new("A::B::C::D::E::Document", "doc1").unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -307,7 +380,7 @@ fn test_resource_with_many_attributes() {
     let engine = PolicyEngine::new_from_str(policies).unwrap();
 
     // Create resource with 50 attributes
-    let mut resource = Resource::new("Document", "doc1");
+    let mut resource = Resource::new("Document", "doc1").unwrap();
     for i in 0..50 {
         resource = resource.with_attr(
             format!("attr{}", i),
@@ -316,8 +389,8 @@ fn test_resource_with_many_attributes() {
     }
 
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
         resource,
     };
 
@@ -341,9 +414,9 @@ fn test_user_with_many_groups() {
     let groups: Vec<String> = (0..50).map(|i| format!("group{}", i)).collect();
 
     let request = Request {
-        principal: Principal::User(User::new("alice", Some(groups), None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "doc1"),
+        principal: Principal::User(User::new("alice", Some(groups), None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "doc1").unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -364,9 +437,9 @@ fn test_decision_includes_correct_version() {
     let engine_version = engine.current_version();
 
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "doc1"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "doc1").unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -421,9 +494,9 @@ fn test_multiple_policies_captured() {
 
     // Alice reading public document should match both policies
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "public"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "public").unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();

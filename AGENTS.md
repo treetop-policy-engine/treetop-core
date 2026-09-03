@@ -36,14 +36,18 @@ benchmarks, and Gungraun/Callgrind benchmarks.
 
 ## Architecture
 
-- `src/engine.rs` owns the authorization hot path. A compiled `PolicySnapshot`
-  is immutable and replaced atomically through `ArcSwap`; one evaluation must
-  use one snapshot from request preparation through its returned version.
+- `src/engine.rs` owns the authorization hot path. An immutable `EngineState`
+  holds policies, schema/store layout, labelers, and version as one atomic
+  generation. One evaluation must use one state from request preparation
+  through its returned decision; `EvaluationSession` freezes that state for a
+  batch.
 - `src/loader.rs` parses and schema-validates policies and precomputes metadata.
   Build a complete replacement snapshot before publishing it.
 - `src/types/` contains the public request, identity, context, decision, and
   policy-listing types. Serde and Utoipa representations are public API.
-- `src/labels.rs` derives server-controlled resource attributes. Labelers run in
+- `src/labels.rs` derives server-controlled resource attributes. Labelers get
+  an immutable resource and derive one declared output; the controlled
+  `LabelerApply::apply` operation owns replacement/removal. Labelers run in
   insertion order and are part of the authorization trust boundary.
 - `src/query.rs` and `src/policy_match.rs` perform structural matching for
   policy-listing APIs. They do not execute Cedar conditions.
@@ -60,8 +64,8 @@ benchmarks, and Gungraun/Callgrind benchmarks.
 - `PolicyEngine::evaluate*` is the authorization source of truth. Policy-listing
   methods only match static principal, action, resource, and effect constraints;
   they do not evaluate `when` or `unless` clauses, and an `Any` effect filter can
-  include forbids. Never use `UserPolicies`, `actions()`, or listing results as
-  proof that an operation is allowed.
+  include forbids. Never use `PolicyCandidates`, `candidate_actions()`, or
+  listing results as proof that an operation is allowed.
 - Fail closed. Callers must not turn `PolicyError`, parse failures, schema
   failures, missing data, or observability failures into an allow decision.
 - Preserve schema validation across normal reloads. Policy and schema
@@ -71,8 +75,12 @@ benchmarks, and Gungraun/Callgrind benchmarks.
   context as trusted application inputs. Do not pass client-asserted group
   membership or derived authorization labels through unchecked.
 - A labeler's output must not be forgeable through preexisting untrusted
-  attributes. Define whether an output is replaced or merged, make that choice
-  explicit, and test empty, conflicting, and repeated applications.
+  attributes. Keep labeler implementations read-only; the blanket apply
+  operation must replace or remove the owned output. Retain receiver-style
+  `labeler.apply(&mut resource)` through `LabelerApply`; do not replace it with
+  a free function or let implementations override mutation. Reject reserved or
+  duplicate output ownership and test empty, conflicting, and repeated
+  applications.
 - Prefer Cedar's typed parsers and validating constructors over hand-built
   entity strings. Reject malformed or empty IDs, invalid namespaces, malformed
   group suffixes, invalid IP values, and schema-incompatible attributes at the
@@ -89,6 +97,40 @@ benchmarks, and Gungraun/Callgrind benchmarks.
 - Expose forbid diagnostics only where the caller is allowed to learn policy
   structure. Diagnostics explain a decision; they must never change it.
 
+## Type-Encoded Invariants
+
+- Follow a define, enforce, consume pattern. Define the valid state in a type,
+  enforce it once at an input or reload boundary, then let internal consumers
+  rely on the type instead of rechecking strings, options, or indexes.
+- Give validated types private fields and fallible constructors. Manual
+  `Deserialize` implementations must call the same constructor so Serde cannot
+  bypass validation. Keep unchecked helpers crate-private and narrowly scoped
+  to already-proven data.
+- Model distinct capabilities or states as distinct types. Use marker types,
+  sealed traits, proof tokens, and dedicated structs when they make invalid
+  transitions or combinations fail to compile. Do not represent a required
+  value as `Option`, a validated index as a bare integer, or mutually exclusive
+  states as loosely related booleans.
+- Separate trusted results from wire data. Authorization-bearing types such as
+  `Decision` must be constructible only by the evaluator and must not implement
+  `Deserialize`. Use explicitly non-authoritative DTOs for persisted or
+  client-supplied decision-shaped data.
+- Treat atomic publication as a type boundary. Build a complete immutable
+  replacement state, including every component that can affect a decision,
+  before one swap. A session or prepared proof must retain that exact state
+  until evaluation and version reporting finish.
+- Remove fallibility after validation. Functions consuming validated identities
+  should return plain values unless a genuinely new failure can occur. Prefer a
+  private proof type over repeatedly matching impossible enum/option cases.
+- Add compile-fail doctests for forbidden state transitions and runtime tests
+  for every validating constructor and deserializer. Test that old sessions
+  remain coherent across successful and failed reloads.
+- Type safety must move work out of the hot path, not add work to it. Cache or
+  precompute validated Cedar forms at construction/reload time, keep proof and
+  marker types zero-sized, avoid per-evaluation reparsing or allocation, and
+  compare the relevant Criterion and Gungraun baselines for changes to type
+  layout, cloning, state capture, or request preparation.
+
 ## Performance
 
 - Treat `PolicyEngine::prepare`, entity construction, authorization, decision
@@ -98,8 +140,8 @@ benchmarks, and Gungraun/Callgrind benchmarks.
   evaluation unless a benchmark demonstrates the tradeoff is acceptable.
 - Keep snapshots immutable and reads lock-free. Do not introduce a global mutex,
   blocking I/O, or policy compilation into evaluation.
-- Labelers should be fast, deterministic, side-effect-free except for their
-  provided resource, and idempotent. Compile regular expressions and other
+- Labelers should be fast, deterministic, and side-effect-free. Their controlled
+  apply operation must be idempotent. Compile regular expressions and other
   matchers once, outside evaluation.
 - Metrics sinks run synchronously. They must not block, perform network I/O, or
   retain an unbounded event history. Prefer atomics, bounded channels, and

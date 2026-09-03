@@ -7,10 +7,9 @@ use std::hint::black_box;
 use treetop_core::Decision;
 
 fn score(decision: Decision) -> usize {
-    match decision {
-        Decision::Allow { policies, .. } => policies.len(),
-        Decision::Deny { .. } => 0,
-    }
+    decision
+        .permit_policies()
+        .map_or(0, |policies| policies.len())
 }
 
 fn benchmark_evaluate_baseline(c: &mut Criterion) {

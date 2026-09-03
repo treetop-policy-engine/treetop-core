@@ -20,17 +20,15 @@ mod qualified_id;
 mod request;
 mod request_context;
 mod resource;
-mod uid_cache;
 mod user;
 mod user_policies;
 
 // Re-export everything for backward compatibility
 pub use action::Action;
-pub use attr_value::AttrValue;
+pub use attr_value::{AttrValue, CedarIp};
 pub use cedar_type::CedarType;
 pub use decision::{
-    Decision, DecisionDiagnostics, FromDecisionWithPolicy, PermitPolicies, PermitPolicy,
-    PolicyVersion,
+    Decision, DecisionDiagnostics, DecisionDto, PermitPolicies, PermitPolicy, PolicyVersion,
 };
 pub use entity_uid::{
     action_entity_uid, group_entity_uid, namespace_segments, resource_entity_uid, user_entity_uid,
@@ -44,4 +42,7 @@ pub use request::Request;
 pub use request_context::RequestContext;
 pub use resource::Resource;
 pub use user::User;
-pub use user_policies::{PolicyEffectFilter, PolicyMatch, PolicyMatchReason, UserPolicies};
+#[allow(deprecated)] // Re-export the migration alias without warning inside this crate.
+pub use user_policies::{
+    PolicyCandidates, PolicyEffectFilter, PolicyMatch, PolicyMatchReason, UserPolicies,
+};

@@ -2,6 +2,7 @@ use cedar_policy::{
     Authorizer, Entities, Entity, Policy, PolicyId, PolicySet, Request as CedarRequest, Schema,
 };
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
@@ -17,9 +18,8 @@ use crate::query::{ActionQuery, PrincipalQuery, ResourceQuery};
 use crate::timers::PhaseTimer;
 use crate::traits::CedarAtom;
 use crate::types::{
-    Decision, DecisionDiagnostics, FromDecisionWithPolicy, PermitPolicies, PermitPolicy,
+    Decision, DecisionDiagnostics, PermitPolicies, PermitPolicy, PolicyCandidates,
     PolicyEffectFilter, PolicyMatchReason, PolicyVersion, Request, RequestContext, Resource,
-    UserPolicies,
 };
 use crate::{Groups, Principal};
 use crate::{error::PolicyError, loader};
@@ -87,8 +87,6 @@ impl EvalTimers {
 struct PreparedRequest {
     cedar_req: CedarRequest,
     entities: Entities,
-    snapshot: Snapshot,
-    selected_store: Option<usize>,
     timers: EvalTimers,
     #[cfg(feature = "observability")]
     sink: crate::metrics::SinkGuard,
@@ -130,30 +128,18 @@ impl PolicySets {
         }
     }
 
-    fn resolve_store(&self, request: &Request) -> Result<Option<usize>, PolicyError> {
+    fn resolve(&self, request: &Request) -> Result<&PolicySet, PolicyError> {
         match self {
-            Self::Monolithic(_) => Ok(None),
-            Self::Scoped { layout, .. } => layout
-                .resolve_request(&request.action, &request.resource)
-                .map(Some),
-        }
-    }
-
-    fn selected(&self, store: Option<usize>) -> Result<&PolicySet, PolicyError> {
-        match (self, store) {
-            (Self::Monolithic(set), None) => Ok(set),
-            (Self::Scoped { layout, stores }, Some(index)) => stores.get(index).ok_or_else(|| {
-                PolicyError::PolicyStoreRoutingError(format!(
-                    "configured policy-store index {index} is outside layout length {}",
-                    layout.stores().len()
-                ))
-            }),
-            (Self::Monolithic(_), Some(index)) => Err(PolicyError::PolicyStoreRoutingError(
-                format!("monolithic engine was given policy-store index {index}"),
-            )),
-            (Self::Scoped { .. }, None) => Err(PolicyError::PolicyStoreRoutingError(
-                "partitioned engine did not resolve a policy store".to_string(),
-            )),
+            Self::Monolithic(set) => Ok(set),
+            Self::Scoped { layout, stores } => {
+                let index = layout.resolve_request(&request.action, &request.resource)?;
+                stores.get(index).ok_or_else(|| {
+                    PolicyError::PolicyStoreRoutingError(format!(
+                        "configured policy-store index {index} is outside layout length {}",
+                        layout.stores().len()
+                    ))
+                })
+            }
         }
     }
 
@@ -182,14 +168,44 @@ impl PolicySets {
 #[derive(Debug)]
 struct PolicySnapshot {
     sets: PolicySets,
-    version: PolicyVersion,
+    revision: PolicyRevision,
     permit_policies: HashMap<PolicyId, PermitPolicy>,
     forbid_policy_ids: HashMap<PolicyId, String>,
     schema: Option<Arc<Schema>>,
 }
 
+/// Policy-only metadata that cannot be mistaken for a published engine version.
+#[derive(Debug)]
+struct PolicyRevision {
+    hash: Arc<str>,
+    loaded_at: Arc<str>,
+}
+
 /// Convenience alias for a shared policy snapshot.
 type Snapshot = Arc<PolicySnapshot>;
+
+/// One coherent, immutable generation of all authorization behavior.
+struct EngineState {
+    policy: Snapshot,
+    label_registry: Option<LabelRegistry>,
+    generation: u64,
+}
+
+type State = Arc<EngineState>;
+
+impl EngineState {
+    fn version(&self) -> PolicyVersion {
+        PolicyVersion {
+            hash: Arc::clone(&self.policy.revision.hash),
+            loaded_at: Arc::clone(&self.policy.revision.loaded_at),
+            label_set: self
+                .label_registry
+                .as_ref()
+                .and_then(|registry| registry.version().cloned()),
+            generation: self.generation,
+        }
+    }
+}
 
 impl PolicySnapshot {
     fn from_policy_text(policy_text: &str) -> Result<Self, PolicyError> {
@@ -231,7 +247,7 @@ impl PolicySnapshot {
 
         Ok(PolicySnapshot {
             sets,
-            version: PolicyVersion {
+            revision: PolicyRevision {
                 hash: hash.into(),
                 loaded_at: humantime::format_rfc3339(SystemTime::now())
                     .to_string()
@@ -241,10 +257,6 @@ impl PolicySnapshot {
             forbid_policy_ids,
             schema,
         })
-    }
-
-    fn version(&self) -> PolicyVersion {
-        self.version.clone()
     }
 
     fn schema(&self) -> Option<&Schema> {
@@ -470,7 +482,7 @@ fn build_entities(
         let mut group_uids = HashSet::with_capacity(groups.map_or(0, Groups::len));
         if let Some(groups) = groups {
             for group in groups {
-                group_uids.insert(group.cedar_entity_uid()?);
+                group_uids.insert(group.cedar_entity_uid().clone());
             }
         }
         group_uids
@@ -485,7 +497,7 @@ fn build_entities(
         let _entity_span = info_span!("construct_entities").entered();
 
         // Construct resource entity
-        let resource_attrs = resource.cedar_attr()?;
+        let resource_attrs = resource.cedar_attr();
         let resource_entity =
             cedar_policy::Entity::new(resource_uid, resource_attrs, Default::default())?;
 
@@ -524,34 +536,81 @@ fn build_entities(
 ///
 /// For single-threaded use or when passing the engine to a single thread,
 /// you can simply clone it directly.
+mod validation_mode_private {
+    pub trait Sealed {}
+}
+
+/// Type-level policy for Cedar schema enforcement.
+pub trait ValidationMode: validation_mode_private::Sealed {}
+
+/// Marker for an engine that does not use a Cedar schema.
+///
+/// Schema-replacing reloads are intentionally unavailable in this mode:
+///
+/// ```compile_fail
+/// use treetop_core::{PolicyEngine, Schema};
+///
+/// let engine = PolicyEngine::new_from_str("permit(principal, action, resource);").unwrap();
+/// let schema: Schema = "entity User;".parse().unwrap();
+/// engine.reload_from_str_with_schema("permit(principal, action, resource);", schema);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct SchemaFree;
+
+/// Marker for an engine that always validates with a Cedar schema.
+#[derive(Debug, Clone, Copy)]
+pub struct SchemaEnforcing;
+
+impl validation_mode_private::Sealed for SchemaFree {}
+impl validation_mode_private::Sealed for SchemaEnforcing {}
+impl ValidationMode for SchemaFree {}
+impl ValidationMode for SchemaEnforcing {}
+
 #[derive(Clone)]
-pub struct PolicyEngine {
-    /// Shared pointer to an `ArcSwap` holding the current policy snapshot.
-    inner: Arc<ArcSwap<PolicySnapshot>>,
-    /// Optional label registry for augmenting resources with derived attributes.
-    label_registry: Option<Arc<LabelRegistry>>,
+pub struct PolicyEngine<M: ValidationMode = SchemaFree> {
+    /// Shared pointer to the atomically replaceable authorization state.
+    inner: Arc<ArcSwap<EngineState>>,
+    mode: PhantomData<fn() -> M>,
 }
 
-impl From<PolicyEngine> for PolicyVersion {
-    fn from(engine: PolicyEngine) -> Self {
+/// A frozen, cheaply cloneable authorization-state generation.
+///
+/// Every evaluation through a session uses the same policies, schema, policy
+/// stores, labelers, and version. Create a new session to observe a successful
+/// reload.
+#[derive(Clone)]
+pub struct EvaluationSession<M: ValidationMode = SchemaFree> {
+    state: State,
+    mode: PhantomData<fn() -> M>,
+}
+
+impl<M: ValidationMode> From<PolicyEngine<M>> for PolicyVersion {
+    fn from(engine: PolicyEngine<M>) -> Self {
         engine.current_version()
     }
 }
 
-impl From<&PolicyEngine> for PolicyVersion {
-    fn from(engine: &PolicyEngine) -> Self {
+impl<M: ValidationMode> From<&PolicyEngine<M>> for PolicyVersion {
+    fn from(engine: &PolicyEngine<M>) -> Self {
         engine.current_version()
     }
 }
 
-impl PolicyEngine {
+impl<M: ValidationMode> PolicyEngine<M> {
     fn from_snapshot(snapshot: PolicySnapshot) -> Self {
-        Self {
-            inner: Arc::new(ArcSwap::from(Arc::new(snapshot))),
+        let state = EngineState {
+            policy: Arc::new(snapshot),
             label_registry: None,
+            generation: 1,
+        };
+        Self {
+            inner: Arc::new(ArcSwap::from(Arc::new(state))),
+            mode: PhantomData,
         }
     }
+}
 
+impl PolicyEngine<SchemaFree> {
     pub fn new_from_str(policy_text: &str) -> Result<Self, PolicyError> {
         Ok(Self::from_snapshot(PolicySnapshot::from_policy_text(
             policy_text,
@@ -580,8 +639,8 @@ impl PolicyEngine {
     pub fn new_from_str_with_schema(
         policy_text: &str,
         schema: Schema,
-    ) -> Result<Self, PolicyError> {
-        Ok(Self::from_snapshot(
+    ) -> Result<PolicyEngine<SchemaEnforcing>, PolicyError> {
+        Ok(PolicyEngine::<SchemaEnforcing>::from_snapshot(
             PolicySnapshot::from_policy_text_with_schema(policy_text, Some(Arc::new(schema)))?,
         ))
     }
@@ -591,8 +650,8 @@ impl PolicyEngine {
         policy_text: &str,
         schema: Schema,
         layout: PolicyStoreLayout,
-    ) -> Result<Self, PolicyError> {
-        Ok(Self::from_snapshot(
+    ) -> Result<PolicyEngine<SchemaEnforcing>, PolicyError> {
+        Ok(PolicyEngine::<SchemaEnforcing>::from_snapshot(
             PolicySnapshot::from_policy_text_with_schema_and_stores(
                 policy_text,
                 Some(Arc::new(schema)),
@@ -605,7 +664,7 @@ impl PolicyEngine {
     pub fn new_from_str_with_cedarschema(
         policy_text: &str,
         schema_text: &str,
-    ) -> Result<Self, PolicyError> {
+    ) -> Result<PolicyEngine<SchemaEnforcing>, PolicyError> {
         let schema: Schema = schema_text
             .parse()
             .map_err(|e| PolicyError::ParseError(format!("failed to parse Cedar schema: {e}")))?;
@@ -617,42 +676,72 @@ impl PolicyEngine {
         policy_text: &str,
         schema_text: &str,
         layout: PolicyStoreLayout,
-    ) -> Result<Self, PolicyError> {
+    ) -> Result<PolicyEngine<SchemaEnforcing>, PolicyError> {
         let schema: Schema = schema_text
             .parse()
             .map_err(|e| PolicyError::ParseError(format!("failed to parse Cedar schema: {e}")))?;
         Self::new_from_str_with_schema_and_policy_stores(policy_text, schema, layout)
     }
+}
 
+impl<M: ValidationMode> PolicyEngine<M> {
     /// Create a new policy engine with a label registry.
     ///
     /// This is a convenience method that combines `new_from_str` and `with_label_registry`.
-    pub fn with_label_registry(mut self, registry: LabelRegistry) -> Self {
-        self.label_registry = Some(Arc::new(registry));
+    pub fn with_label_registry(self, registry: LabelRegistry) -> Self {
+        self.set_label_registry(registry);
         self
     }
 
     /// Set or replace the label registry for this engine.
     ///
     /// This allows updating the labelers after the engine has been created.
-    pub fn set_label_registry(&mut self, registry: LabelRegistry) {
-        self.label_registry = Some(Arc::new(registry));
+    pub fn set_label_registry(&self, registry: LabelRegistry) {
+        self.inner.rcu(|current| {
+            Arc::new(EngineState {
+                policy: Arc::clone(&current.policy),
+                label_registry: Some(registry.clone()),
+                generation: current.generation.saturating_add(1),
+            })
+        });
     }
 
-    /// Get a reference to the label registry, if one is configured.
-    pub fn label_registry(&self) -> Option<&LabelRegistry> {
-        self.label_registry.as_deref()
+    /// Clone the current immutable label registry, if one is configured.
+    pub fn label_registry(&self) -> Option<LabelRegistry> {
+        self.current_state().label_registry.clone()
     }
 
     pub fn reload_from_str(&self, policy_text: &str) -> Result<(), PolicyError> {
-        let current_snapshot = self.current_snapshot();
-        let had_schema = current_snapshot.schema.is_some();
-        let schema = current_snapshot.schema.clone();
-        let layout = current_snapshot.sets.layout().cloned();
-        let new_snapshot: Snapshot = Arc::new(
-            PolicySnapshot::from_policy_text_with_schema_and_stores(policy_text, schema, layout)?,
-        );
-        self.inner.store(new_snapshot);
+        let had_schema = 'compile: loop {
+            let mut expected = self.current_state();
+            let had_schema = expected.policy.schema.is_some();
+            let schema = expected.policy.schema.clone();
+            let layout = expected.policy.sets.layout().cloned();
+            let new_snapshot: Snapshot =
+                Arc::new(PolicySnapshot::from_policy_text_with_schema_and_stores(
+                    policy_text,
+                    schema,
+                    layout,
+                )?);
+
+            loop {
+                match self.install_policy_if_current(&expected, Arc::clone(&new_snapshot)) {
+                    Ok(()) => break 'compile had_schema,
+                    Err(latest) if Arc::ptr_eq(&expected.policy, &latest.policy) => {
+                        // A label-only update won the race. The compiled policy
+                        // still uses the current schema and store layout, so
+                        // retry publication while preserving the newer labels.
+                        expected = latest;
+                    }
+                    Err(_) => {
+                        // Another policy/schema generation won the race. Compile
+                        // again against that generation so a normal reload can
+                        // never restore a superseded schema.
+                        continue 'compile;
+                    }
+                }
+            }
+        };
         debug!(
             event = "PolicyReload",
             schema_enabled = had_schema,
@@ -664,62 +753,59 @@ impl PolicyEngine {
         Ok(())
     }
 
-    /// Reload policies and replace the engine schema at the same time.
-    pub fn reload_from_str_with_schema(
-        &self,
-        policy_text: &str,
-        schema: Schema,
-    ) -> Result<(), PolicyError> {
-        let current_snapshot = self.current_snapshot();
-        let had_schema = current_snapshot.schema.is_some();
-        let layout = current_snapshot.sets.layout().cloned();
-        let new_snapshot: Snapshot =
-            Arc::new(PolicySnapshot::from_policy_text_with_schema_and_stores(
-                policy_text,
-                Some(Arc::new(schema)),
-                layout,
-            )?);
-        self.inner.store(new_snapshot);
-        debug!(
-            event = "PolicyReload",
-            schema_enabled = true,
-            schema_reloaded = true,
-            schema_previously_enabled = had_schema
-        );
-        // Track reloads for metrics (no-op if feature disabled or no sink configured)
-        #[cfg(feature = "observability")]
-        record_reload();
-        Ok(())
-    }
-
-    /// Reload policies and replace the engine schema from Cedar schema text.
-    pub fn reload_from_str_with_cedarschema(
-        &self,
-        policy_text: &str,
-        schema_text: &str,
-    ) -> Result<(), PolicyError> {
-        let schema: Schema = schema_text
-            .parse()
-            .map_err(|e| PolicyError::ParseError(format!("failed to parse Cedar schema: {e}")))?;
-        self.reload_from_str_with_schema(policy_text, schema)
-    }
-
     /// Get the current immutable snapshot.
-    fn current_snapshot(&self) -> Snapshot {
+    fn current_state(&self) -> State {
         self.inner.load_full()
     }
 
-    /// Get the current policy version.
+    fn current_snapshot(&self) -> Snapshot {
+        Arc::clone(&self.current_state().policy)
+    }
+
+    fn install_policy(&self, policy: Snapshot) {
+        self.inner.rcu(|current| {
+            Arc::new(EngineState {
+                policy: Arc::clone(&policy),
+                label_registry: current.label_registry.clone(),
+                generation: current.generation.saturating_add(1),
+            })
+        });
+    }
+
+    /// Publish a compiled policy only if its source state is still current.
+    fn install_policy_if_current(&self, expected: &State, policy: Snapshot) -> Result<(), State> {
+        let replacement = Arc::new(EngineState {
+            policy,
+            label_registry: expected.label_registry.clone(),
+            generation: expected.generation.saturating_add(1),
+        });
+        let previous = self.inner.compare_and_swap(expected, replacement);
+        if Arc::ptr_eq(expected, &previous) {
+            Ok(())
+        } else {
+            Err(Arc::clone(&previous))
+        }
+    }
+
+    /// Get the complete current authorization-state version.
     ///
-    /// The `hash` is computed from the policy text, and `loaded_at` reflects
-    /// when this snapshot was installed.
+    /// The policy hash, policy load time, label-set version, and engine
+    /// generation all come from the same atomic state load.
     pub fn current_version(&self) -> PolicyVersion {
-        self.current_snapshot().version()
+        self.current_state().version()
+    }
+
+    /// Capture one coherent authorization-state generation for batch work.
+    pub fn session(&self) -> EvaluationSession<M> {
+        EvaluationSession {
+            state: self.current_state(),
+            mode: PhantomData,
+        }
     }
 
     /// Return configured policy-store IDs, or `None` for a monolithic engine.
     pub fn policy_store_ids(&self) -> Option<Vec<PolicyStoreId>> {
-        self.current_snapshot().sets.store_ids()
+        self.current_state().policy.sets.store_ids()
     }
 
     /// Prepare a request for authorization: accumulate labels, build Cedar entities, resolve groups.
@@ -727,13 +813,11 @@ impl PolicyEngine {
     /// This separates request preparation from the authorization decision, making both
     /// more testable and the main hot path more readable.
     fn prepare(
-        &self,
+        state: &EngineState,
         request: &Request,
         request_context: Option<&RequestContext>,
     ) -> Result<PreparedRequest, PolicyError> {
-        let snapshot = self.current_snapshot();
-        let selected_store = snapshot.sets.resolve_store(request)?;
-        let schema = snapshot.schema();
+        let schema = state.policy.schema();
         #[cfg(feature = "observability")]
         let sink = get_sink();
         #[cfg(feature = "observability")]
@@ -754,10 +838,10 @@ impl PolicyEngine {
         }
 
         // Convert each UID once after trusted label derivation is complete.
-        let principal_uid = request.principal.cedar_entity_uid()?;
-        let action_uid = request.action.cedar_entity_uid()?;
+        let principal_uid = request.principal.cedar_entity_uid().clone();
+        let action_uid = request.action.cedar_entity_uid().clone();
 
-        let labelled_resource = if let Some(registry) = &self.label_registry {
+        let labelled_resource = if let Some(registry) = &state.label_registry {
             let labelled_resource = apply_labels(registry, &request.resource, &mut timers);
             if timers.debug_enabled {
                 let resource_for_metrics = labelled_resource.as_ref().unwrap_or(&request.resource);
@@ -780,7 +864,7 @@ impl PolicyEngine {
             None
         };
         let resource_for_entities = labelled_resource.as_ref().unwrap_or(&request.resource);
-        let resource_uid = resource_for_entities.cedar_entity_uid()?;
+        let resource_uid = resource_for_entities.cedar_entity_uid().clone();
         let context = build_effective_context(request_context)?;
 
         if timers.debug_enabled {
@@ -830,8 +914,6 @@ impl PolicyEngine {
         Ok(PreparedRequest {
             cedar_req,
             entities,
-            snapshot,
-            selected_store,
             timers,
             #[cfg(feature = "observability")]
             sink,
@@ -861,7 +943,7 @@ impl PolicyEngine {
     /// # Examples
     ///
     /// ```rust
-    /// use treetop_core::{PolicyEngine, Request, Principal, User, Action, Resource, Decision};
+    /// use treetop_core::{PolicyEngine, Request, Principal, User, Action, Resource};
     ///
     /// let policies = r#"
     ///     permit (
@@ -874,18 +956,16 @@ impl PolicyEngine {
     /// let engine = PolicyEngine::new_from_str(policies).unwrap();
     ///
     /// let request = Request {
-    ///     principal: Principal::User(User::new("alice", None, None)),
-    ///     action: Action::new("read", None),
-    ///     resource: Resource::new("Document", "doc1"),
+    ///     principal: Principal::User(User::new("alice", None, None).unwrap()),
+    ///     action: Action::new("read", None).unwrap(),
+    ///     resource: Resource::new("Document", "doc1").unwrap(),
     /// };
     ///
     /// let decision = engine.evaluate(&request).unwrap();
-    /// assert!(matches!(decision, Decision::Allow { .. }));
+    /// assert!(decision.is_allowed());
     ///
     /// // Access version information
-    /// if let Decision::Allow { version, .. } = decision {
-    ///     println!("Allowed by policy version: {}", version.hash);
-    /// }
+    /// println!("Allowed by policy version: {}", decision.version().hash);
     /// ```
     ///
     /// # Thread Safety
@@ -897,7 +977,9 @@ impl PolicyEngine {
         tracing::instrument(name = "policy_evaluation", skip_all)
     )]
     pub fn evaluate(&self, request: &Request) -> Result<Decision, PolicyError> {
-        Ok(self.evaluate_internal(request, None, false)?.decision)
+        Ok(self
+            .evaluate_internal(request, None, false)?
+            .into_decision())
     }
 
     /// Evaluate a request with explicit Cedar request context.
@@ -908,7 +990,7 @@ impl PolicyEngine {
     ) -> Result<Decision, PolicyError> {
         Ok(self
             .evaluate_internal(request, Some(request_context), false)?
-            .decision)
+            .into_decision())
     }
 
     /// Evaluate a request and include deny-side forbid diagnostics.
@@ -934,8 +1016,19 @@ impl PolicyEngine {
         request_context: Option<&RequestContext>,
         include_forbid_diagnostics: bool,
     ) -> Result<DecisionDiagnostics, PolicyError> {
+        let state = self.current_state();
+        Self::evaluate_state(&state, request, request_context, include_forbid_diagnostics)
+    }
+
+    fn evaluate_state(
+        state: &EngineState,
+        request: &Request,
+        request_context: Option<&RequestContext>,
+        include_forbid_diagnostics: bool,
+    ) -> Result<DecisionDiagnostics, PolicyError> {
+        let policy_set = state.policy.sets.resolve(request)?;
         // Prepare the request: apply labels, build entities, resolve groups
-        let mut prepared = self.prepare(request, request_context)?;
+        let mut prepared = Self::prepare(state, request, request_context)?;
 
         // Perform authorization with RAII timing (using cached Authorizer)
         let result = {
@@ -943,7 +1036,6 @@ impl PolicyEngine {
             let _timer = PhaseTimer::new_if(&mut prepared.timers.authz, measure_enabled);
             #[cfg(feature = "observability")]
             let _authz_span = info_span!("authorize").entered();
-            let policy_set = prepared.snapshot.sets.selected(prepared.selected_store)?;
             get_authorizer().is_authorized(&prepared.cedar_req, policy_set, &prepared.entities)
         };
 
@@ -956,7 +1048,7 @@ impl PolicyEngine {
             );
         }
 
-        let version = prepared.snapshot.version();
+        let version = state.version();
         if prepared.timers.debug_enabled {
             debug!(
                 event = "Request",
@@ -971,15 +1063,14 @@ impl PolicyEngine {
         // Permit metadata is part of Allow decisions. Forbid IDs are only
         // materialized when the caller explicitly requests diagnostics. Metrics
         // borrow matching IDs from the Cedar response and compiled snapshot.
-        let permit_policies = extract_permit_policies(&prepared.snapshot, &result);
+        let permit_policies = extract_permit_policies(&state.policy, &result);
         let collect_forbid_ids = include_forbid_diagnostics;
         let forbid_policy_ids = if collect_forbid_ids {
-            extract_forbid_policy_ids(&prepared.snapshot, &result)
+            extract_forbid_policy_ids(&state.policy, &result)
         } else {
             Vec::new()
         };
-        let decision =
-            Decision::from_decision_with_policy(result.decision(), permit_policies, version)?;
+        let decision = Decision::from_cedar(result.decision(), permit_policies, version)?;
 
         // Record metrics (no-op when no sink is configured or feature disabled)
         #[cfg(feature = "observability")]
@@ -998,7 +1089,7 @@ impl PolicyEngine {
                     Decision::Allow { policies, .. } => MatchedPolicySource::Allow(policies),
                     Decision::Deny { .. } => MatchedPolicySource::Deny {
                         diagnostics: result.diagnostics(),
-                        policy_ids: &prepared.snapshot.forbid_policy_ids,
+                        policy_ids: &state.policy.forbid_policy_ids,
                     },
                 };
                 let observation = EvaluationObservation::new(
@@ -1013,10 +1104,7 @@ impl PolicyEngine {
             }
         }
 
-        Ok(DecisionDiagnostics {
-            decision,
-            matched_forbid_policy_ids: forbid_policy_ids,
-        })
+        Ok(DecisionDiagnostics::new(decision, forbid_policy_ids))
     }
 
     /// List permit-policy candidates whose scope matches a user.
@@ -1038,7 +1126,7 @@ impl PolicyEngine {
     /// [`PolicyEngine::list_policies_for_user_with_resource`].
     ///
     /// Output is deterministic: policies are sorted by Cedar policy ID.
-    /// Each returned policy includes match reasons via `UserPolicies::matches()`.
+    /// Each returned policy includes match reasons via `PolicyCandidates::matches()`.
     ///
     /// # Arguments
     ///
@@ -1048,7 +1136,7 @@ impl PolicyEngine {
     ///
     /// # Returns
     ///
-    /// * `Ok(UserPolicies)` - Matching policies and match metadata
+    /// * `Ok(PolicyCandidates)` - Matching policies and match metadata
     /// * `Err(PolicyError)` - If entity UID construction fails
     ///
     /// # Examples
@@ -1062,17 +1150,17 @@ impl PolicyEngine {
     /// "#;
     ///
     /// let engine = PolicyEngine::new_from_str(policies).unwrap();
-    /// let user_policies = engine.list_policies_for_user("alice", &["admins"], &[]).unwrap();
+    /// let candidates = engine.list_policies_for_user("alice", &["admins"], &[]).unwrap();
     ///
-    /// assert_eq!(user_policies.policies().len(), 2);
-    /// assert!(!user_policies.matches().is_empty());
+    /// assert_eq!(candidates.policies().len(), 2);
+    /// assert!(!candidates.matches().is_empty());
     /// ```
     pub fn list_policies_for_user(
         &self,
         user: &str,
         groups: &[&str],
         namespace: &[&str],
-    ) -> Result<UserPolicies, PolicyError> {
+    ) -> Result<PolicyCandidates, PolicyError> {
         self.list_policies_for_user_with_resource_and_effect(
             user,
             groups,
@@ -1092,7 +1180,7 @@ impl PolicyEngine {
     /// Cedar `when` and `unless` clauses are not evaluated. The result is not
     /// an authorization decision. This method defaults to permit policies; use
     /// [`PolicyEngine::list_policies_with_effect`] for an explicit effect.
-    pub fn list_policies(&self, request: &Request) -> Result<UserPolicies, PolicyError> {
+    pub fn list_policies(&self, request: &Request) -> Result<PolicyCandidates, PolicyError> {
         self.list_policies_with_effect(request, PolicyEffectFilter::Permit)
     }
 
@@ -1103,9 +1191,9 @@ impl PolicyEngine {
         &self,
         request: &Request,
         effect_filter: PolicyEffectFilter,
-    ) -> Result<UserPolicies, PolicyError> {
-        let principal = PrincipalQuery::from_principal(&request.principal)?;
-        let action = ActionQuery::from_action(&request.action)?;
+    ) -> Result<PolicyCandidates, PolicyError> {
+        let principal = PrincipalQuery::from_principal(&request.principal);
+        let action = ActionQuery::from_action(&request.action);
         self.list_policies_dispatch(
             &request.principal.to_string(),
             &principal,
@@ -1124,7 +1212,7 @@ impl PolicyEngine {
     /// When `resource` is `None`, behavior is equivalent to
     /// [`PolicyEngine::list_policies_for_user`].
     ///
-    /// Returned `UserPolicies` includes match reasons for principal and, when
+    /// Returned `PolicyCandidates` includes match reasons for principal and, when
     /// applicable, resource matches.
     pub fn list_policies_for_user_with_resource(
         &self,
@@ -1132,7 +1220,7 @@ impl PolicyEngine {
         groups: &[&str],
         namespace: &[&str],
         resource: Option<&Resource>,
-    ) -> Result<UserPolicies, PolicyError> {
+    ) -> Result<PolicyCandidates, PolicyError> {
         self.list_policies_for_user_with_resource_and_effect(
             user,
             groups,
@@ -1150,7 +1238,7 @@ impl PolicyEngine {
         namespace: &[&str],
         resource: Option<&Resource>,
         effect_filter: PolicyEffectFilter,
-    ) -> Result<UserPolicies, PolicyError> {
+    ) -> Result<PolicyCandidates, PolicyError> {
         let principal = PrincipalQuery::for_user(user, groups, namespace)?;
         self.list_policies_dispatch(user, &principal, None, resource, effect_filter)
     }
@@ -1167,7 +1255,7 @@ impl PolicyEngine {
         &self,
         group: &str,
         namespace: &[&str],
-    ) -> Result<UserPolicies, PolicyError> {
+    ) -> Result<PolicyCandidates, PolicyError> {
         self.list_policies_for_group_with_resource_and_effect(
             group,
             namespace,
@@ -1185,7 +1273,7 @@ impl PolicyEngine {
         group: &str,
         namespace: &[&str],
         resource: Option<&Resource>,
-    ) -> Result<UserPolicies, PolicyError> {
+    ) -> Result<PolicyCandidates, PolicyError> {
         self.list_policies_for_group_with_resource_and_effect(
             group,
             namespace,
@@ -1201,7 +1289,7 @@ impl PolicyEngine {
         namespace: &[&str],
         resource: Option<&Resource>,
         effect_filter: PolicyEffectFilter,
-    ) -> Result<UserPolicies, PolicyError> {
+    ) -> Result<PolicyCandidates, PolicyError> {
         let principal = PrincipalQuery::for_group(group, namespace)?;
         self.list_policies_dispatch(group, &principal, None, resource, effect_filter)
     }
@@ -1213,12 +1301,9 @@ impl PolicyEngine {
         action: Option<&ActionQuery>,
         resource: Option<&Resource>,
         effect_filter: PolicyEffectFilter,
-    ) -> Result<UserPolicies, PolicyError> {
+    ) -> Result<PolicyCandidates, PolicyError> {
         let snapshot = self.current_snapshot();
-        let resource_query = match resource {
-            Some(resource) => Some(ResourceQuery::from_resource(resource)?),
-            None => None,
-        };
+        let resource_query = resource.map(ResourceQuery::from_resource);
         let mut matching_policies: Vec<(Policy, Vec<PolicyMatchReason>)> = Vec::new();
         let mut seen_policy_ids = HashSet::new();
 
@@ -1260,16 +1345,17 @@ impl PolicyEngine {
             }
         }
 
-        Ok(UserPolicies::new_with_matches(
+        Ok(PolicyCandidates::new_with_matches(
             principal_id,
             matching_policies,
         ))
     }
 
-    pub fn policies(&self) -> Result<Vec<Policy>, PolicyError> {
+    /// Return all policies in the current coherent engine state.
+    pub fn policies(&self) -> Vec<Policy> {
         let snapshot = self.current_snapshot();
         match &snapshot.sets {
-            PolicySets::Monolithic(set) => Ok(set.policies().cloned().collect()),
+            PolicySets::Monolithic(set) => set.policies().cloned().collect(),
             PolicySets::Scoped { .. } => {
                 let mut seen_policy_ids = HashSet::new();
                 let mut policies = snapshot
@@ -1280,9 +1366,91 @@ impl PolicyEngine {
                     .cloned()
                     .collect::<Vec<_>>();
                 policies.sort_by(|left, right| left.id().cmp(right.id()));
-                Ok(policies)
+                policies
             }
         }
+    }
+}
+
+impl PolicyEngine<SchemaEnforcing> {
+    /// Reload policies and replace the enforced schema in one atomic update.
+    pub fn reload_from_str_with_schema(
+        &self,
+        policy_text: &str,
+        schema: Schema,
+    ) -> Result<(), PolicyError> {
+        let current_state = self.current_state();
+        let current_snapshot = &current_state.policy;
+        let layout = current_snapshot.sets.layout().cloned();
+        let new_snapshot: Snapshot =
+            Arc::new(PolicySnapshot::from_policy_text_with_schema_and_stores(
+                policy_text,
+                Some(Arc::new(schema)),
+                layout,
+            )?);
+        self.install_policy(new_snapshot);
+        debug!(
+            event = "PolicyReload",
+            schema_enabled = true,
+            schema_reloaded = true,
+            schema_previously_enabled = true
+        );
+        #[cfg(feature = "observability")]
+        record_reload();
+        Ok(())
+    }
+
+    /// Reload policies and replace the enforced schema from Cedar schema text.
+    pub fn reload_from_str_with_cedarschema(
+        &self,
+        policy_text: &str,
+        schema_text: &str,
+    ) -> Result<(), PolicyError> {
+        let schema: Schema = schema_text
+            .parse()
+            .map_err(|e| PolicyError::ParseError(format!("failed to parse Cedar schema: {e}")))?;
+        self.reload_from_str_with_schema(policy_text, schema)
+    }
+}
+
+impl<M: ValidationMode> EvaluationSession<M> {
+    /// Return the complete version used by every evaluation in this session.
+    pub fn version(&self) -> PolicyVersion {
+        self.state.version()
+    }
+
+    /// Evaluate a request against this session's frozen state.
+    pub fn evaluate(&self, request: &Request) -> Result<Decision, PolicyError> {
+        Ok(PolicyEngine::<M>::evaluate_state(&self.state, request, None, false)?.into_decision())
+    }
+
+    /// Evaluate a request with explicit Cedar request context.
+    pub fn evaluate_with_context(
+        &self,
+        request: &Request,
+        request_context: &RequestContext,
+    ) -> Result<Decision, PolicyError> {
+        Ok(
+            PolicyEngine::<M>::evaluate_state(&self.state, request, Some(request_context), false)?
+                .into_decision(),
+        )
+    }
+
+    /// Evaluate a request and include deny-side forbid diagnostics.
+    pub fn evaluate_with_diagnostics(
+        &self,
+        request: &Request,
+    ) -> Result<DecisionDiagnostics, PolicyError> {
+        PolicyEngine::<M>::evaluate_state(&self.state, request, None, true)
+    }
+
+    /// Evaluate a contextual request and include deny-side forbid diagnostics.
+    pub fn evaluate_with_context_and_diagnostics(
+        &self,
+        request: &Request,
+        request_context: &RequestContext,
+    ) -> Result<DecisionDiagnostics, PolicyError> {
+        PolicyEngine::<M>::evaluate_state(&self.state, request, Some(request_context), true)
     }
 }
 

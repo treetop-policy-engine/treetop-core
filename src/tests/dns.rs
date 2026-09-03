@@ -32,20 +32,20 @@ mod tests {
 
         users_map.insert(
             "alice".to_string(),
-            User::new("alice", all_groups.clone(), default_ns.clone()),
+            User::new("alice", all_groups.clone(), default_ns.clone()).unwrap(),
         );
 
         users_map.insert(
             "bob".to_string(),
-            User::new("bob", users_only.clone(), default_ns.clone()),
+            User::new("bob", users_only.clone(), default_ns.clone()).unwrap(),
         );
 
         users_map.insert(
             "charlie".to_string(),
-            User::new("charlie", admins_only.clone(), default_ns.clone()),
+            User::new("charlie", admins_only.clone(), default_ns.clone()).unwrap(),
         );
 
-        users_map.insert("super".to_string(), User::new("super", None, None));
+        users_map.insert("super".to_string(), User::new("super", None, None).unwrap());
 
         users_map
     }
@@ -55,13 +55,13 @@ mod tests {
     }
 
     fn get_action(action: &str) -> Action {
-        Action::new(action, Some(vec![NAMESPACE.to_string()]))
+        Action::new(action, Some(vec![NAMESPACE.to_string()])).unwrap()
     }
 
     #[test]
     fn test_dns_policy_has_correct_policy_count() {
         let engine = init_engine();
-        let policies = engine.policies().unwrap();
+        let policies = engine.policies();
         assert_eq!(policies.len(), 9);
     }
 
@@ -87,8 +87,9 @@ mod tests {
             principal: Principal::User(user),
             action,
             resource: Resource::new("Host", "hostname.example.com")
+                .unwrap()
                 .with_attr("name", AttrValue::String("hostname.example.com".into()))
-                .with_attr("ip", AttrValue::Ip("192.0.2.1".into())),
+                .with_attr("ip", AttrValue::ip("192.0.2.1").unwrap()),
         };
 
         let decision = engine.evaluate(&request).unwrap();
@@ -108,8 +109,9 @@ mod tests {
             principal: Principal::User(user),
             action,
             resource: Resource::new("Host", "hostname.example.com")
+                .unwrap()
                 .with_attr("name", AttrValue::String("hostname.example.com".into()))
-                .with_attr("ip", AttrValue::Ip("192.0.2.1".into())),
+                .with_attr("ip", AttrValue::ip("192.0.2.1").unwrap()),
         };
         let decision = engine.evaluate(&request).unwrap();
         assert!(!matches!(decision, Decision::Deny { .. }));

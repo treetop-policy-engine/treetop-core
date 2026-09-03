@@ -1,4 +1,4 @@
-//! User permissions and policy collections.
+//! Non-authoritative candidate-policy collections.
 
 use cedar_policy::{ActionConstraint, EntityUid, Policy};
 use serde::ser::SerializeStruct;
@@ -46,15 +46,16 @@ pub struct PolicyMatch {
 /// been evaluated. Use `PolicyEngine::evaluate` to authorize an operation.
 #[must_use = "candidate policies are not an authorization decision"]
 #[derive(Debug, Clone)]
-pub struct UserPolicies {
+pub struct PolicyCandidates {
     user: String,
     policies: Vec<Policy>,
     actions: Vec<EntityUid>,
     matches: Vec<PolicyMatch>,
 }
 
-impl UserPolicies {
-    pub fn new(user: &str, policies: &[Policy]) -> Self {
+impl PolicyCandidates {
+    #[cfg(test)]
+    pub(crate) fn new(user: &str, policies: &[Policy]) -> Self {
         let mut sorted_policies = policies.to_vec();
         sorted_policies.sort_by(|left, right| left.id().cmp(right.id()));
 
@@ -69,7 +70,10 @@ impl UserPolicies {
         Self::new_with_matches_internal(user, sorted_policies, matches)
     }
 
-    pub fn new_with_matches(user: &str, matches: Vec<(Policy, Vec<PolicyMatchReason>)>) -> Self {
+    pub(crate) fn new_with_matches(
+        user: &str,
+        matches: Vec<(Policy, Vec<PolicyMatchReason>)>,
+    ) -> Self {
         let mut matches = matches;
         matches
             .sort_by(|(left_policy, _), (right_policy, _)| left_policy.id().cmp(right_policy.id()));
@@ -110,7 +114,7 @@ impl UserPolicies {
         actions.sort();
         actions.dedup();
 
-        UserPolicies {
+        PolicyCandidates {
             user: user.to_string(),
             policies,
             actions,
@@ -137,6 +141,7 @@ impl UserPolicies {
     /// Backward-compatible alias for [`Self::candidate_actions`].
     ///
     /// This is not a list of authorized actions.
+    #[deprecated(note = "use candidate_actions(); listing results do not authorize actions")]
     pub fn actions(&self) -> &[EntityUid] {
         self.candidate_actions()
     }
@@ -161,8 +166,8 @@ impl UserPolicies {
             .map(|m| m.reasons.as_slice())
     }
 
-    /// Get the actions as a sorted list of strings.
-    pub fn actions_by_name(&self) -> Vec<String> {
+    /// Get candidate actions as a sorted list of strings.
+    pub fn candidate_actions_by_name(&self) -> Vec<String> {
         let mut actions = self
             .actions
             .iter()
@@ -170,6 +175,14 @@ impl UserPolicies {
             .collect::<Vec<_>>();
         actions.sort();
         actions
+    }
+
+    /// Backward-compatible alias for [`Self::candidate_actions_by_name`].
+    #[deprecated(
+        note = "use candidate_actions_by_name(); listing results do not authorize actions"
+    )]
+    pub fn actions_by_name(&self) -> Vec<String> {
+        self.candidate_actions_by_name()
     }
 
     /// Get the policies as a sorted list of strings.
@@ -184,7 +197,11 @@ impl UserPolicies {
     }
 }
 
-impl Serialize for UserPolicies {
+/// Backward-compatible name for structurally matched policy candidates.
+#[deprecated(note = "renamed to PolicyCandidates to emphasize that listing is not authorization")]
+pub type UserPolicies = PolicyCandidates;
+
+impl Serialize for PolicyCandidates {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -201,7 +218,7 @@ impl Serialize for UserPolicies {
             policies_as_json.push(json);
         }
 
-        let mut s = ser.serialize_struct("UserPolicies", 4)?;
+        let mut s = ser.serialize_struct("PolicyCandidates", 4)?;
         s.serialize_field("user", &self.user)?;
         s.serialize_field("policies", &policies_as_json)?;
         s.serialize_field("matches", &self.matches)?;
@@ -220,10 +237,10 @@ mod tests {
 
     #[test]
     fn test_user_policies_new_empty() {
-        let policies = UserPolicies::new("alice", &[]);
+        let policies = PolicyCandidates::new("alice", &[]);
         assert_eq!(policies.user(), "alice");
         assert!(policies.is_empty());
-        assert_eq!(policies.actions().len(), 0);
+        assert_eq!(policies.candidate_actions().len(), 0);
         assert_eq!(policies.policies().len(), 0);
     }
 
@@ -238,13 +255,13 @@ mod tests {
             r#"permit(principal == User::"alice", action == Action::"read", resource);"#;
         let policy = Policy::parse(None, policy_text).unwrap();
 
-        let policies = UserPolicies::new("alice", &[policy]);
+        let policies = PolicyCandidates::new("alice", &[policy]);
         assert_eq!(policies.user(), "alice");
         assert!(!policies.is_empty());
-        assert_eq!(policies.actions().len(), 1);
+        assert_eq!(policies.candidate_actions().len(), 1);
         assert_eq!(policies.policies().len(), 1);
 
-        let actions = policies.actions_by_name();
+        let actions = policies.candidate_actions_by_name();
         assert_eq!(actions.len(), 1);
         assert!(actions[0].contains("read"));
     }
@@ -254,10 +271,10 @@ mod tests {
         let policy_text = r#"permit(principal == User::"alice", action in [Action::"read", Action::"write", Action::"delete"], resource);"#;
         let policy = Policy::parse(None, policy_text).unwrap();
 
-        let policies = UserPolicies::new("alice", &[policy]);
-        assert_eq!(policies.actions().len(), 3);
+        let policies = PolicyCandidates::new("alice", &[policy]);
+        assert_eq!(policies.candidate_actions().len(), 3);
 
-        let actions = policies.actions_by_name();
+        let actions = policies.candidate_actions_by_name();
         assert_eq!(actions.len(), 3);
         // actions_by_name should be sorted
         assert!(actions[0] < actions[1]);
@@ -269,9 +286,9 @@ mod tests {
         let policy_text = r#"permit(principal == User::"alice", action, resource);"#;
         let policy = Policy::parse(None, policy_text).unwrap();
 
-        let policies = UserPolicies::new("alice", &[policy]);
+        let policies = PolicyCandidates::new("alice", &[policy]);
         // "Any" action constraint should result in empty actions list
-        assert_eq!(policies.actions().len(), 0);
+        assert_eq!(policies.candidate_actions().len(), 0);
         assert_eq!(policies.policies().len(), 1);
     }
 
@@ -288,9 +305,9 @@ mod tests {
         )
         .unwrap();
 
-        let policies = UserPolicies::new("alice", &[policy1, policy2]);
+        let policies = PolicyCandidates::new("alice", &[policy1, policy2]);
         assert_eq!(policies.policies().len(), 2);
-        assert_eq!(policies.actions().len(), 2);
+        assert_eq!(policies.candidate_actions().len(), 2);
 
         let policy_names = policies.policies_by_name();
         assert_eq!(policy_names.len(), 2);
@@ -304,7 +321,7 @@ mod tests {
             r#"permit(principal == User::"alice", action == Action::"read", resource);"#;
         let policy = Policy::parse(None, policy_text).unwrap();
 
-        let policies = UserPolicies::new("alice", &[policy]);
+        let policies = PolicyCandidates::new("alice", &[policy]);
         let json = serde_json::to_value(&policies).unwrap();
 
         assert_eq!(json["user"], "alice");
@@ -321,9 +338,9 @@ mod tests {
             r#"permit(principal == User::"alice", action == Action::"read", resource);"#;
         let policy = Policy::parse(None, policy_text).unwrap();
 
-        let policies = UserPolicies::new("alice", &[policy]);
-        let actions1 = policies.actions();
-        let actions2 = policies.actions();
+        let policies = PolicyCandidates::new("alice", &[policy]);
+        let actions1 = policies.candidate_actions();
+        let actions2 = policies.candidate_actions();
 
         // Should be cloned, not shared
         assert_eq!(actions1.len(), actions2.len());
@@ -334,7 +351,7 @@ mod tests {
         let policy_text = r#"permit(principal, action, resource);"#;
         let policy = Policy::parse(None, policy_text).unwrap();
 
-        let policies = UserPolicies::new("alice@example.com", &[policy]);
+        let policies = PolicyCandidates::new("alice@example.com", &[policy]);
         assert_eq!(policies.user(), "alice@example.com");
     }
 
@@ -344,7 +361,7 @@ mod tests {
             r#"permit(principal == User::"alice", action == Action::"read", resource);"#;
         let policy = Policy::parse(None, policy_text).unwrap();
 
-        let policies = UserPolicies::new_with_matches(
+        let policies = PolicyCandidates::new_with_matches(
             "alice",
             vec![(
                 policy,

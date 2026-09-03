@@ -11,7 +11,7 @@
 //! ```rust
 //! use regex::Regex;
 //! use std::sync::Arc;
-//! use treetop_core::{Action, AttrValue, PolicyEngine, Request, Decision, User, Principal, Resource, RegexLabeler, LabelRegistryBuilder};
+//! use treetop_core::{Action, AttrValue, PolicyEngine, Request, User, Principal, Resource, RegexLabeler, LabelRegistryBuilder};
 //! use sha2::{Digest, Sha256};
 //!
 //! let policies = r#"
@@ -37,22 +37,23 @@
 //!         "name",
 //!         "nameLabels",
 //!         patterns.into_iter().collect(),
-//!     )))
-//!     .build();
+//!     ).unwrap()))
+//!     .build()
+//!     .unwrap();
 //!
 //! let engine = PolicyEngine::new_from_str(&policies).unwrap()
 //!     .with_label_registry(label_registry);
 //!
 //! let request = Request {
-//!    principal: Principal::User(User::new("alice", None, None)), // No groups, no namespace
-//!    action: Action::new("create_host", None), // Action is not in a namespace
-//!    resource: Resource::new("Host", "hostname.example.com")
+//!    principal: Principal::User(User::new("alice", None, None).unwrap()), // No groups, no namespace
+//!    action: Action::new("create_host", None).unwrap(), // Action is not in a namespace
+//!    resource: Resource::new("Host", "hostname.example.com").unwrap()
 //!     .with_attr("name", AttrValue::String("hostname.example.com".into()))
-//!     .with_attr("ip", AttrValue::Ip("10.0.0.1".into()))
+//!     .with_attr("ip", AttrValue::ip("10.0.0.1").unwrap())
 //! };
 //!
 //! let decision = engine.evaluate(&request).unwrap();
-//! assert!(matches!(decision, Decision::Allow { .. }));
+//! assert!(decision.is_allowed());
 //!
 //! // List all of alice's policies
 //! let alice_policies = engine.list_policies_for_user("alice", &[], &[]).unwrap();
@@ -87,9 +88,9 @@
 //! let handle = thread::spawn(move || {
 //!     // Evaluate policies in a background thread
 //!     let request = Request {
-//!         principal: Principal::User(User::new("user", None, None)),
-//!         action: Action::new("read", None),
-//!         resource: Resource::new("Document", "doc1"),
+//!         principal: Principal::User(User::new("user", None, None).unwrap()),
+//!         action: Action::new("read", None).unwrap(),
+//!         resource: Resource::new("Document", "doc1").unwrap(),
 //!     };
 //!     let _decision = engine_clone.evaluate(&request);
 //! });
@@ -100,18 +101,22 @@
 
 pub use build_info::{BuildInfo, GitInfo, build_info};
 pub use cedar_policy::Schema;
-pub use engine::PolicyEngine;
+pub use engine::{EvaluationSession, PolicyEngine, SchemaEnforcing, SchemaFree, ValidationMode};
 pub use error::PolicyError;
-pub use labels::{LabelRegistry, LabelRegistryBuilder, Labeler, RegexLabeler};
+pub use labels::{
+    LabelRegistry, LabelRegistryBuilder, LabelSetVersion, Labeler, LabelerApply, RegexLabeler,
+};
 pub use loader::{compile_policy, compile_policy_with_schema};
 pub use policy_store::{
     POLICY_STORE_ANNOTATION, PolicyStoreConfig, PolicyStoreId, PolicyStoreLayout,
 };
+#[allow(deprecated)] // Re-export the migration alias without warning inside this crate.
 pub use types::{
-    Action, AttrValue, CedarType, Decision, DecisionDiagnostics, Group, Groups, PermitPolicies,
-    PermitPolicy, PolicyEffectFilter, PolicyMatch, PolicyMatchReason, PolicyVersion, Principal,
-    Request, RequestContext, Resource, User, UserPolicies, action_entity_uid, group_entity_uid,
-    namespace_segments, resource_entity_uid, user_entity_uid,
+    Action, AttrValue, CedarIp, CedarType, Decision, DecisionDiagnostics, DecisionDto, Group,
+    Groups, PermitPolicies, PermitPolicy, PolicyCandidates, PolicyEffectFilter, PolicyMatch,
+    PolicyMatchReason, PolicyVersion, Principal, Request, RequestContext, Resource, User,
+    UserPolicies, action_entity_uid, group_entity_uid, namespace_segments, resource_entity_uid,
+    user_entity_uid,
 };
 
 #[cfg(feature = "observability")]

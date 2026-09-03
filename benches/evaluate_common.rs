@@ -82,12 +82,17 @@ fn build_registry(labelers: usize) -> Option<treetop_core::LabelRegistry> {
                 (format!("domain_match_{idx}"), domain_regex.clone()),
                 (format!("web_prefix_{idx}"), web_regex.clone()),
             ],
-        );
+        )
+        .unwrap();
 
         builder = builder.add_labeler(Arc::new(labeler));
     }
 
-    Some(builder.build())
+    Some(
+        builder
+            .build()
+            .expect("benchmark label registry must build"),
+    )
 }
 
 pub fn build_scenario(spec: ScenarioSpec) -> Scenario {
@@ -116,15 +121,18 @@ pub fn build_scenario(spec: ScenarioSpec) -> Scenario {
     };
 
     let request = Request {
-        principal: Principal::User(User::new(
-            "target",
-            groups,
-            if namespace.is_empty() {
-                None
-            } else {
-                Some(namespace.clone())
-            },
-        )),
+        principal: Principal::User(
+            User::new(
+                "target",
+                groups,
+                if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace.clone())
+                },
+            )
+            .unwrap(),
+        ),
         action: Action::new(
             action_name,
             if namespace.is_empty() {
@@ -132,10 +140,12 @@ pub fn build_scenario(spec: ScenarioSpec) -> Scenario {
             } else {
                 Some(namespace.clone())
             },
-        ),
+        )
+        .unwrap(),
         resource: Resource::new("Host", "web-01.example.com")
+            .unwrap()
             .with_attr("name", AttrValue::String("web-01.example.com".to_string()))
-            .with_attr("ip", AttrValue::Ip("10.0.0.42".to_string()))
+            .with_attr("ip", AttrValue::ip("10.0.0.42".to_string()).unwrap())
             .with_attr("env", AttrValue::String("prod".to_string())),
     };
 
