@@ -192,7 +192,7 @@ fn derived_labels_cannot_be_forged_by_resource_attributes() {
             ),
     };
 
-    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn custom_labeler_cannot_echo_forged_authorization_label() {
             ),
     };
 
-    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn non_applicable_labeler_still_removes_forged_owned_output() {
             ),
     };
 
-    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn earlier_labeler_cannot_consume_forged_later_owned_output() {
             ),
     };
 
-    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
 }
 
 #[parameterized(
@@ -437,13 +437,13 @@ permit (
     };
 
     let without_context = engine.evaluate(&request).unwrap();
-    assert!(matches!(without_context, Deny { .. }));
+    assert!(!without_context.is_allowed());
 
     let context = RequestContext::new()
         .with_attr("env", AttrValue::String("prod".to_string()))
         .with_attr("ticket", AttrValue::Long(1337));
     let with_context = engine.evaluate_with_context(&request, &context).unwrap();
-    assert!(matches!(with_context, Allow { .. }));
+    assert!(with_context.is_allowed());
 }
 
 #[test]
@@ -470,7 +470,7 @@ forbid (
     };
 
     let diagnostics = engine.evaluate_with_diagnostics(&request).unwrap();
-    assert!(matches!(diagnostics.decision(), Deny { .. }));
+    assert!(!diagnostics.decision().is_allowed());
     assert_eq!(
         diagnostics.matched_forbid_policy_ids(),
         vec!["deny_alice_read".to_string()]

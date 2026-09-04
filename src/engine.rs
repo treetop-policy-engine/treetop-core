@@ -936,8 +936,8 @@ impl<M: ValidationMode> PolicyEngine<M> {
     ///
     /// # Returns
     ///
-    /// * `Ok(Decision::Allow)` - If at least one permit policy matches and no forbid policies match
-    /// * `Ok(Decision::Deny)` - If no permit policies match or if a forbid policy matches
+    /// * `Ok(decision)` with [`Decision::is_allowed`] returning `true` if at least one permit policy
+    ///   matches and no forbid policies match, or `false` otherwise
     /// * `Err(PolicyError)` - If there's an error constructing entities, parsing the request, or during evaluation
     ///
     /// # Examples
@@ -1085,9 +1085,9 @@ impl<M: ValidationMode> PolicyEngine<M> {
                     authorize_ms: prepared.timers.authz.as_secs_f64() * 1000.0,
                     total_ms: dur.as_secs_f64() * 1000.0,
                 };
-                let matched_policies = match &decision {
-                    Decision::Allow { policies, .. } => MatchedPolicySource::Allow(policies),
-                    Decision::Deny { .. } => MatchedPolicySource::Deny {
+                let matched_policies = match decision.permit_policies() {
+                    Some(policies) => MatchedPolicySource::Allow(policies),
+                    None => MatchedPolicySource::Deny {
                         diagnostics: result.diagnostics(),
                         policy_ids: &state.policy.forbid_policy_ids,
                     },

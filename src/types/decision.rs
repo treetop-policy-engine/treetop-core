@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use utoipa::ToSchema;
+use utoipa::openapi::{RefOr, schema::Schema};
+use utoipa::{PartialSchema, ToSchema};
 
 use crate::error::PolicyError;
 use crate::labels::LabelSetVersion;
@@ -193,29 +194,79 @@ impl Display for PolicyVersion {
 /// [`DecisionDto`] for untrusted or persisted wire data; a DTO is never
 /// authorization evidence.
 ///
-/// Its non-exhaustive variants cannot be constructed outside this crate:
+/// Its private representation can only be constructed by the evaluator:
 ///
 /// ```compile_fail
-/// use treetop_core::{Decision, PolicyVersion};
+/// use treetop_core::{Decision, DecisionDto};
 ///
-/// let version = PolicyVersion {
-///     hash: "hash".into(),
-///     loaded_at: "2026-09-04T00:00:00Z".into(),
-///     label_set: None,
-///     generation: 1,
-/// };
-/// let forged = Decision::Deny { version };
+/// fn forge(dto: DecisionDto) -> Decision {
+///     Decision(dto)
+/// }
 /// ```
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash, ToSchema)]
-#[non_exhaustive]
-pub enum Decision {
-    #[non_exhaustive]
-    Allow {
-        policies: PermitPolicies,
-        version: PolicyVersion,
-    },
-    #[non_exhaustive]
-    Deny { version: PolicyVersion },
+///
+/// Callers cannot replace issued evidence by matching mutable variant fields:
+///
+/// ```compile_fail
+/// use treetop_core::{Decision, PermitPolicies};
+///
+/// fn forge(decision: &mut Decision) {
+///     if let Decision::Allow { policies, version, .. } = decision {
+///         *policies = PermitPolicies::empty();
+///         version.generation = u64::MAX;
+///     }
+/// }
+/// ```
+///
+/// Read-only accessors protect permit evidence and versions, even when the
+/// caller holds a mutable decision:
+///
+/// ```compile_fail
+/// use treetop_core::{Decision, PermitPolicies};
+///
+/// fn erase_evidence(decision: &mut Decision) {
+///     *decision.permit_policies().unwrap() = PermitPolicies::empty();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use treetop_core::Decision;
+///
+/// fn change_generation(decision: &mut Decision) {
+///     decision.version().generation = u64::MAX;
+/// }
+/// ```
+///
+/// Serialized data cannot be promoted back into trusted evidence:
+///
+/// ```compile_fail
+/// use treetop_core::Decision;
+///
+/// let forged: Decision = serde_json::from_str(r#"{"Deny":{"version":{
+///     "hash":"forged","loaded_at":"arbitrary","generation":1
+/// }}}"#).unwrap();
+/// ```
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct Decision(DecisionDto);
+
+// Delegate the wire schema explicitly: deriving it on the wrapper adds a
+// nesting level even though Serde serializes it transparently.
+impl PartialSchema for Decision {
+    fn schema() -> RefOr<Schema> {
+        let mut schema = DecisionDto::schema();
+        if let RefOr::T(Schema::OneOf(schema)) = &mut schema {
+            schema.description =
+                Some("Allow or deny decision produced by a trusted engine evaluation.".into());
+        }
+        schema
+    }
+}
+
+impl ToSchema for Decision {
+    fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
+        DecisionDto::schemas(schemas);
+    }
 }
 
 /// Serializable and deserializable decision-shaped data without authority.
@@ -242,21 +293,21 @@ pub struct DecisionDiagnostics {
 impl Decision {
     /// Whether this trusted decision allows the request.
     pub fn is_allowed(&self) -> bool {
-        matches!(self, Self::Allow { .. })
+        matches!(self.0, DecisionDto::Allow { .. })
     }
 
     /// Complete engine-state version used for evaluation.
     pub fn version(&self) -> &PolicyVersion {
-        match self {
-            Self::Allow { version, .. } | Self::Deny { version, .. } => version,
+        match &self.0 {
+            DecisionDto::Allow { version, .. } | DecisionDto::Deny { version } => version,
         }
     }
 
     /// Permit policies for an allow decision.
     pub fn permit_policies(&self) -> Option<&PermitPolicies> {
-        match self {
-            Self::Allow { policies, .. } => Some(policies),
-            Self::Deny { .. } => None,
+        match &self.0 {
+            DecisionDto::Allow { policies, .. } => Some(policies),
+            DecisionDto::Deny { .. } => None,
         }
     }
 }
@@ -287,29 +338,17 @@ impl DecisionDiagnostics {
 
 impl From<&Decision> for DecisionDto {
     fn from(decision: &Decision) -> Self {
-        match decision {
-            Decision::Allow {
-                policies, version, ..
-            } => Self::Allow {
-                policies: policies.clone(),
-                version: version.clone(),
-            },
-            Decision::Deny { version, .. } => Self::Deny {
-                version: version.clone(),
-            },
-        }
+        decision.0.clone()
     }
 }
 
 impl Display for Decision {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Decision::Allow {
-                policies, version, ..
-            } => {
+        match &self.0 {
+            DecisionDto::Allow { policies, version } => {
                 write!(f, "Allow(hash={}; [{}])", version.hash, policies)
             }
-            Decision::Deny { version, .. } => write!(f, "Deny(hash={})", version.hash),
+            DecisionDto::Deny { version } => write!(f, "Deny(hash={})", version.hash),
         }
     }
 }
@@ -331,9 +370,9 @@ impl Decision {
                         "Cedar returned Allow without a matching permit policy".to_string(),
                     ));
                 }
-                Ok(Decision::Allow { policies, version })
+                Ok(Self(DecisionDto::Allow { policies, version }))
             }
-            cedar_policy::Decision::Deny => Ok(Decision::Deny { version }),
+            cedar_policy::Decision::Deny => Ok(Self(DecisionDto::Deny { version })),
         }
     }
 }

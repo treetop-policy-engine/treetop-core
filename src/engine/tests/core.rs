@@ -149,7 +149,7 @@ fn test_empty_policy_text() {
     };
 
     let decision = engine.evaluate(&request).unwrap();
-    assert!(matches!(decision, Decision::Deny { .. }));
+    assert!(!decision.is_allowed());
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn test_large_policy_set() {
     };
 
     let decision = engine.evaluate(&request).unwrap();
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn test_deeply_nested_namespaces() {
     };
 
     let decision = engine.evaluate(&request).unwrap();
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn test_resource_with_many_attributes() {
     };
 
     let decision = engine.evaluate(&request).unwrap();
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn test_user_with_many_groups() {
     };
 
     let decision = engine.evaluate(&request).unwrap();
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 }
 
 #[test]
@@ -444,12 +444,8 @@ fn test_decision_includes_correct_version() {
 
     let decision = engine.evaluate(&request).unwrap();
 
-    match decision {
-        Decision::Allow { version, .. } => {
-            assert_eq!(version.hash, engine_version.hash);
-        }
-        Decision::Deny { .. } => panic!("Expected Allow"),
-    }
+    assert!(decision.is_allowed());
+    assert_eq!(decision.version().hash, engine_version.hash);
 }
 
 #[test]
@@ -501,18 +497,15 @@ fn test_multiple_policies_captured() {
 
     let decision = engine.evaluate(&request).unwrap();
 
-    match decision {
-        Decision::Allow { policies, .. } => {
-            assert_eq!(
-                policies.len(),
-                2,
-                "Should have captured both matching policies"
-            );
-            // Both policy0 and policy1 should be present
-            let policy_ids: Vec<_> = policies.iter().map(|p| p.cedar_id.as_ref()).collect();
-            assert!(policy_ids.contains(&"policy0"), "Should contain policy0");
-            assert!(policy_ids.contains(&"policy1"), "Should contain policy1");
-        }
-        Decision::Deny { .. } => panic!("Expected Allow decision"),
-    }
+    assert!(decision.is_allowed());
+    let policies = decision.permit_policies().unwrap();
+    assert_eq!(
+        policies.len(),
+        2,
+        "Should have captured both matching policies"
+    );
+    // Both policy0 and policy1 should be present
+    let policy_ids: Vec<_> = policies.iter().map(|p| p.cedar_id.as_ref()).collect();
+    assert!(policy_ids.contains(&"policy0"), "Should contain policy0");
+    assert!(policy_ids.contains(&"policy1"), "Should contain policy1");
 }

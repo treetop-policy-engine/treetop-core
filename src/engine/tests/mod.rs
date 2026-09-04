@@ -4,7 +4,7 @@ use super::*;
 use crate::labels::{LabelRegistry, LabelRegistryBuilder, Labeler, RegexLabeler};
 use crate::snapshot_decision;
 use crate::types::AttrValue;
-use crate::types::{Decision::Allow, Decision::Deny, Group, Resource};
+use crate::types::{Group, Resource};
 use crate::{Action, PolicyEffectFilter, PolicyMatchReason, RequestContext, User};
 use cedar_policy::{EntityUid, Schema};
 use regex::Regex;
@@ -341,11 +341,11 @@ fn document_with_sensitivity(id: &str, sensitivity: i64) -> Resource {
 }
 
 fn assert_allow(decision: &Decision) {
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 }
 
 fn assert_deny(decision: &Decision) {
-    assert!(matches!(decision, Decision::Deny { .. }));
+    assert!(!decision.is_allowed());
 }
 
 mod core;

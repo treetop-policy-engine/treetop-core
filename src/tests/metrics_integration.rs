@@ -448,7 +448,7 @@ fn test_panicking_metrics_sink_is_isolated_from_engine_operations() {
             resource: Resource::new("Document", "public").unwrap(),
         })
         .expect("a metrics panic must not fail authorization");
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 
     crate::metrics::set_sink(Arc::new(PanickingBorrowedSink));
     let decision = engine
@@ -458,7 +458,7 @@ fn test_panicking_metrics_sink_is_isolated_from_engine_operations() {
             resource: Resource::new("Document", "public").unwrap(),
         })
         .expect("a borrowed metrics panic must not fail authorization");
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 
     engine
         .reload_from_str(r#"permit(principal, action, resource);"#)
@@ -510,10 +510,7 @@ fn test_matched_policies_tracking() {
     let result1 = engine
         .evaluate(&request1)
         .expect("Evaluation should succeed");
-    assert!(
-        matches!(result1, Decision::Allow { .. }),
-        "Alice should be allowed to read doc1"
-    );
+    assert!(result1.is_allowed(), "Alice should be allowed to read doc1");
 
     // Test 2: Bob should match the second permit policy (policy1)
     let request2 = Request {
@@ -524,10 +521,7 @@ fn test_matched_policies_tracking() {
     let result2 = engine
         .evaluate(&request2)
         .expect("Evaluation should succeed");
-    assert!(
-        matches!(result2, Decision::Allow { .. }),
-        "Bob should be allowed to write doc2"
-    );
+    assert!(result2.is_allowed(), "Bob should be allowed to write doc2");
 
     // Test 3: Charlie should be denied by forbid policy (policy2)
     let request3 = Request {
@@ -539,7 +533,7 @@ fn test_matched_policies_tracking() {
         .evaluate(&request3)
         .expect("Evaluation should succeed");
     assert!(
-        matches!(result3, Decision::Deny { .. }),
+        !result3.is_allowed(),
         "Charlie should be denied delete on doc3"
     );
 
@@ -553,7 +547,7 @@ fn test_matched_policies_tracking() {
         .evaluate(&request4)
         .expect("Evaluation should succeed");
     assert!(
-        matches!(result4, Decision::Deny { .. }),
+        !result4.is_allowed(),
         "David should be denied (no matching policy)"
     );
 
@@ -620,10 +614,7 @@ fn test_multiple_matched_policies() {
     let result = engine
         .evaluate(&request)
         .expect("Evaluation should succeed");
-    assert!(
-        matches!(result, Decision::Allow { .. }),
-        "Alice should be allowed"
-    );
+    assert!(result.is_allowed(), "Alice should be allowed");
 
     // Verify both policies were matched
     let matched_policies = test_sink.matched_policies();

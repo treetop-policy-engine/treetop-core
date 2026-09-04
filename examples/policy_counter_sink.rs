@@ -159,7 +159,7 @@ fn main() {
 
         match engine.evaluate(&request) {
             Ok(decision) => {
-                let verdict = if matches!(decision, treetop_core::Decision::Allow { .. }) {
+                let verdict = if decision.is_allowed() {
                     "ALLOWED"
                 } else {
                     "DENIED"

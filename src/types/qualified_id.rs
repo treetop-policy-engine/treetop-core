@@ -32,6 +32,33 @@ impl private::Sealed for GroupMarker {}
 impl private::Sealed for ActionMarker {}
 
 /// Sealed marker implemented by the built-in Cedar identity kinds.
+///
+/// Use this bound for generic helpers that accept any built-in qualified ID:
+///
+/// ```
+/// use treetop_core::types::{ActionId, GroupId, QualifiedId, QualifiedIdKind, UserId};
+///
+/// fn raw_id<T: QualifiedIdKind>(id: &QualifiedId<T>) -> &str {
+///     id.id()
+/// }
+///
+/// assert_eq!(raw_id(&UserId::new("alice", None)?), "alice");
+/// assert_eq!(raw_id(&GroupId::new("admins", None)?), "admins");
+/// assert_eq!(raw_id(&ActionId::new("read", None)?), "read");
+/// # Ok::<(), treetop_core::PolicyError>(())
+/// ```
+///
+/// External implementations are forbidden so callers cannot substitute an
+/// unvalidated Cedar entity kind:
+///
+/// ```compile_fail
+/// use treetop_core::types::QualifiedIdKind;
+///
+/// struct CustomKind;
+/// impl QualifiedIdKind for CustomKind {
+///     const CEDAR_TYPE: &'static str = "Custom";
+/// }
+/// ```
 pub trait QualifiedIdKind: private::Sealed {
     /// Cedar entity basename represented by this marker.
     const CEDAR_TYPE: &'static str;

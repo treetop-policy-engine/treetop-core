@@ -36,7 +36,7 @@ pub use entity_uid::{
 pub use group::{Group, Groups};
 pub use principal::Principal;
 pub use qualified_id::{
-    ActionId, ActionMarker, GroupId, GroupMarker, QualifiedId, UserId, UserMarker,
+    ActionId, ActionMarker, GroupId, GroupMarker, QualifiedId, QualifiedIdKind, UserId, UserMarker,
 };
 pub use request::Request;
 pub use request_context::RequestContext;

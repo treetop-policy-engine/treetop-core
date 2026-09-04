@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deserialization boundaries. Validated Cedar entity UIDs are retained in the
   typed request values so evaluation does not reparse them.
 - `Decision` and `DecisionDiagnostics` are now engine-issued authorization
-  evidence: non-exhaustive variants prevent callers from constructing decisions,
+  evidence: private fields prevent callers from constructing or mutating decisions,
   and the types no longer implement `Deserialize`. Serialize
   `DecisionDto::from(&decision)` when a wire form is needed, and re-evaluate the
   concrete request instead of trusting received DTOs.
@@ -60,9 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PolicyEngine<SchemaEnforcing>`. Create a new schema-enforcing engine rather
   than changing a schema-free engine's validation mode in place.
 - **BREAKING**: Removed `FromDecisionWithPolicy`; decisions are constructed only
-  by evaluation. `Decision` and `DecisionDto` are now non-exhaustive; prefer
-  accessors such as `is_allowed`, `version`, and `permit_policies`. Serialized
+  by evaluation. `Decision` is now an opaque struct; replace variant matches and
+  field access with `is_allowed()`, `version()`, and `permit_policies()`.
+  `DecisionDto` is non-exhaustive and remains mutable, non-authoritative wire
+  data. The decision JSON and OpenAPI shapes are preserved. Serialized
   `PolicyVersion` values now include `label_set` and `generation`.
+- **BREAKING**: Generic helpers using `QualifiedId<T>` must now declare
+  `T: treetop_core::types::QualifiedIdKind`. The sealed trait is re-exported
+  alongside `QualifiedId` and supports the built-in user, group, and action
+  markers; downstream implementations remain forbidden.
 - **BREAKING**: `DecisionDiagnostics` fields are private; use `decision()`,
   `into_decision()`, and `matched_forbid_policy_ids()` so diagnostics cannot be
   assembled into forged authorization evidence.

@@ -276,10 +276,7 @@ fn test_group_membership_is_evaluated_per_request_and_per_listing_call() {
         action: Action::new("view", None).unwrap(),
         resource: Resource::new("Photo", "photo.jpg").unwrap(),
     };
-    assert!(matches!(
-        engine.evaluate(&no_group_request).unwrap(),
-        Deny { .. }
-    ));
+    assert!(!engine.evaluate(&no_group_request).unwrap().is_allowed());
 
     // Same user, with users group: now group policy should match.
     let users_group_request = Request {
@@ -287,10 +284,7 @@ fn test_group_membership_is_evaluated_per_request_and_per_listing_call() {
         action: Action::new("view", None).unwrap(),
         resource: Resource::new("Photo", "photo.jpg").unwrap(),
     };
-    assert!(matches!(
-        engine.evaluate(&users_group_request).unwrap(),
-        Allow { .. }
-    ));
+    assert!(engine.evaluate(&users_group_request).unwrap().is_allowed());
 
     // Same engine + same user id for listing, but different group input:
     // group membership is taken from call input, not cached globally.
@@ -453,7 +447,7 @@ fn test_list_policies_with_effect_consistent_with_evaluate_on_forbid_deny() {
     };
 
     let decision = engine.evaluate(&request).unwrap();
-    assert!(matches!(decision, Deny { .. }));
+    assert!(!decision.is_allowed());
 
     let default_permit = engine.list_policies(&request).unwrap();
     let any = engine
@@ -579,7 +573,7 @@ permit (
         resource: Resource::new("A::B::C::Photo", "holiday-1").unwrap(),
     };
 
-    assert!(matches!(engine.evaluate(&request).unwrap(), Allow { .. }));
+    assert!(engine.evaluate(&request).unwrap().is_allowed());
     let listed = engine.list_policies(&request).unwrap();
     assert_eq!(listed.policies().len(), 1);
 }

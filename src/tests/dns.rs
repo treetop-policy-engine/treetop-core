@@ -7,8 +7,8 @@ mod tests {
     use yare::parameterized;
 
     use crate::{
-        Action, Decision, Principal, Request, Resource, User, engine::PolicyEngine,
-        snapshot_decision, types::AttrValue,
+        Action, Principal, Request, Resource, User, engine::PolicyEngine, snapshot_decision,
+        types::AttrValue,
     };
 
     const DNS_POLICY: &str = include_str!("../../testdata/dns.cedar");
@@ -114,6 +114,6 @@ mod tests {
                 .with_attr("ip", AttrValue::ip("192.0.2.1").unwrap()),
         };
         let decision = engine.evaluate(&request).unwrap();
-        assert!(!matches!(decision, Decision::Deny { .. }));
+        assert!(decision.is_allowed());
     }
 }

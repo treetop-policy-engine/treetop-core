@@ -84,8 +84,8 @@ fn scoped_engine_matches_monolithic_decisions() {
         let monolithic_decision = monolithic.evaluate(&request).unwrap();
         let scoped_decision = scoped.evaluate(&request).unwrap();
         assert_eq!(
-            matches!(monolithic_decision, Decision::Allow { .. }),
-            matches!(scoped_decision, Decision::Allow { .. })
+            monolithic_decision.is_allowed(),
+            scoped_decision.is_allowed()
         );
     }
 }
