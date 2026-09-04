@@ -1,5 +1,53 @@
 use super::*;
 
+struct EchoOwnedOutput;
+
+impl Labeler for EchoOwnedOutput {
+    fn applies_to(&self, kind: &str) -> bool {
+        kind == "Host"
+    }
+
+    fn output(&self) -> &str {
+        "nameLabels"
+    }
+
+    fn derive(&self, resource: &Resource) -> Option<AttrValue> {
+        resource.attributes().get(self.output()).cloned()
+    }
+}
+
+struct CopyLaterOwnedOutput;
+
+impl Labeler for CopyLaterOwnedOutput {
+    fn applies_to(&self, kind: &str) -> bool {
+        kind == "Host"
+    }
+
+    fn output(&self) -> &str {
+        "nameLabels"
+    }
+
+    fn derive(&self, resource: &Resource) -> Option<AttrValue> {
+        resource.attributes().get("laterLabels").cloned()
+    }
+}
+
+struct OwnLaterOutputForOtherKind;
+
+impl Labeler for OwnLaterOutputForOtherKind {
+    fn applies_to(&self, kind: &str) -> bool {
+        kind == "Document"
+    }
+
+    fn output(&self) -> &str {
+        "laterLabels"
+    }
+
+    fn derive(&self, _resource: &Resource) -> Option<AttrValue> {
+        None
+    }
+}
+
 #[parameterized(
         alice_edit_allow = { "alice", "edit", "VacationPhoto94.jpg" },
         alice_view_allow = { "alice", "view", "VacationPhoto94.jpg" },
@@ -140,6 +188,77 @@ fn derived_labels_cannot_be_forged_by_resource_attributes() {
             .with_attr("name", AttrValue::String("attacker.invalid".into()))
             .with_attr(
                 "nameLabels",
+                AttrValue::Set(vec![AttrValue::String("example_domain".into())]),
+            ),
+    };
+
+    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+}
+
+#[test]
+fn custom_labeler_cannot_echo_forged_authorization_label() {
+    let registry = LabelRegistryBuilder::versioned("custom-anti-forgery-v1")
+        .add_labeler(Arc::new(EchoOwnedOutput))
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
+        .unwrap()
+        .with_label_registry(registry);
+    let request = Request {
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
+        resource: Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr(
+                "nameLabels",
+                AttrValue::Set(vec![AttrValue::String("example_domain".into())]),
+            ),
+    };
+
+    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+}
+
+#[test]
+fn non_applicable_labeler_still_removes_forged_owned_output() {
+    let labeler = RegexLabeler::new("Document", "name", "nameLabels", Vec::new()).unwrap();
+    let registry = LabelRegistryBuilder::versioned("non-applicable-anti-forgery-v1")
+        .add_labeler(Arc::new(labeler))
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
+        .unwrap()
+        .with_label_registry(registry);
+    let request = Request {
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
+        resource: Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr(
+                "nameLabels",
+                AttrValue::Set(vec![AttrValue::String("example_domain".into())]),
+            ),
+    };
+
+    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+}
+
+#[test]
+fn earlier_labeler_cannot_consume_forged_later_owned_output() {
+    let registry = LabelRegistryBuilder::versioned("ordered-anti-forgery-v1")
+        .add_labeler(Arc::new(CopyLaterOwnedOutput))
+        .add_labeler(Arc::new(OwnLaterOutputForOtherKind))
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
+        .unwrap()
+        .with_label_registry(registry);
+    let request = Request {
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
+        resource: Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr(
+                "laterLabels",
                 AttrValue::Set(vec![AttrValue::String("example_domain".into())]),
             ),
     };

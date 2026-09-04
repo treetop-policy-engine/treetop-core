@@ -72,6 +72,10 @@ pub trait Labeler: Send + Sync {
 
     /// Derive the output from trusted resource identity or input attributes.
     ///
+    /// The controlled [`LabelerApply::apply`] operation removes this labeler's
+    /// declared output before calling `derive`, so the resource view cannot
+    /// expose a caller-provided value for that output.
+    ///
     /// Implementations must be fast, deterministic, side-effect-free, and
     /// must not perform blocking I/O.
     fn derive(&self, resource: &Resource) -> Option<AttrValue>;
@@ -89,13 +93,13 @@ pub trait LabelerApply: Labeler {
     /// to the deriving type while the blanket implementation prevents custom
     /// labelers from weakening the mutation rule.
     fn apply(&self, resource: &mut Resource) {
-        match self.derive(resource) {
-            Some(value) => {
-                resource.attrs().insert(self.output().to_string(), value);
-            }
-            None => {
-                resource.attrs().remove(self.output());
-            }
+        let output = self.output();
+        // The declared output is untrusted input until this labeler derives it.
+        // Hide it from custom derivations so they cannot echo a forged value.
+        resource.attrs().remove(output);
+
+        if let Some(value) = self.derive(resource) {
+            resource.attrs().insert(output.to_string(), value);
         }
     }
 }
@@ -225,19 +229,32 @@ impl LabelRegistry {
         self.version.as_ref()
     }
 
-    /// Clone and label a resource only when at least one labeler applies.
+    /// Clone and sanitize a resource when it contains a registry-owned output,
+    /// or clone and label it when at least one labeler applies.
     ///
-    /// The first matching labeler is found before cloning so registries that
-    /// serve other resource kinds add no resource-clone cost. Each labeler's
-    /// applicability predicate is still evaluated at most once and labelers
-    /// retain insertion order.
+    /// A resource with no registry-owned output is cloned only when a labeler
+    /// applies, so registries serving other resource kinds retain the no-clone
+    /// fast path. All owned outputs are removed before any derivation, and each
+    /// applicability predicate is evaluated at most once in insertion order.
     pub(crate) fn apply_to_clone_if_applicable(&self, res: &Resource) -> Option<Resource> {
+        let has_owned_output = self
+            .labelers
+            .iter()
+            .any(|labeler| res.attributes().contains_key(labeler.output()));
+
+        if has_owned_output {
+            let mut labelled = res.clone();
+            self.apply(&mut labelled);
+            return Some(labelled);
+        }
+
         let first_match = self
             .labelers
             .iter()
             .position(|labeler| labeler.applies_to(res.kind()))?;
 
         let mut labelled = res.clone();
+        self.clear_owned_outputs(&mut labelled);
         self.labelers[first_match].apply(&mut labelled);
         for labeler in &self.labelers[first_match + 1..] {
             if labeler.applies_to(labelled.kind()) {
@@ -249,12 +266,21 @@ impl LabelRegistry {
 
     /// Applies all labelers in the registry to the given resource.
     ///
-    /// Labelers run in insertion order and own distinct output attributes.
+    /// All registry-owned outputs are removed before checking applicability or
+    /// running derivations. Applicable labelers then run in insertion order and
+    /// own distinct output attributes.
     pub fn apply(&self, res: &mut Resource) {
+        self.clear_owned_outputs(res);
         for labeler in self.labelers.iter() {
             if labeler.applies_to(res.kind()) {
                 labeler.apply(res);
             }
+        }
+    }
+
+    fn clear_owned_outputs(&self, res: &mut Resource) {
+        for labeler in self.labelers.iter() {
+            res.attrs().remove(labeler.output());
         }
     }
 }
@@ -345,6 +371,42 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use yare::parameterized;
+
+    struct EchoOwnedOutput;
+
+    impl Labeler for EchoOwnedOutput {
+        fn applies_to(&self, kind: &str) -> bool {
+            kind == "Host"
+        }
+
+        fn output(&self) -> &str {
+            "labels"
+        }
+
+        fn derive(&self, resource: &Resource) -> Option<AttrValue> {
+            resource.attributes().get(self.output()).cloned()
+        }
+    }
+
+    struct CopyAttribute {
+        kind: &'static str,
+        input: &'static str,
+        output: &'static str,
+    }
+
+    impl Labeler for CopyAttribute {
+        fn applies_to(&self, kind: &str) -> bool {
+            kind == self.kind
+        }
+
+        fn output(&self) -> &str {
+            self.output
+        }
+
+        fn derive(&self, resource: &Resource) -> Option<AttrValue> {
+            resource.attributes().get(self.input).cloned()
+        }
+    }
 
     fn compile(rules: Vec<(&str, &str)>) -> Vec<(String, Regex)> {
         rules
@@ -499,6 +561,63 @@ mod tests {
         labeler.apply(&mut res);
 
         assert!(!res.attributes().contains_key("nameLabels"));
+    }
+
+    #[test]
+    fn custom_labeler_cannot_observe_or_preserve_untrusted_owned_output() {
+        let mut resource = Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr("labels", AttrValue::String("forged".into()));
+
+        EchoOwnedOutput.apply(&mut resource);
+
+        assert!(!resource.attributes().contains_key("labels"));
+    }
+
+    #[test]
+    fn registry_removes_owned_output_when_no_labeler_applies() {
+        let registry = LabelRegistryBuilder::new()
+            .add_labeler(Arc::new(EchoOwnedOutput))
+            .build()
+            .unwrap();
+        let resource = Resource::new("Document", "report")
+            .unwrap()
+            .with_attr("labels", AttrValue::String("forged".into()));
+
+        let labelled = registry
+            .apply_to_clone_if_applicable(&resource)
+            .expect("an owned input attribute must produce a sanitized clone");
+
+        assert!(!labelled.attributes().contains_key("labels"));
+        assert_eq!(
+            resource.attributes().get("labels"),
+            Some(&AttrValue::String("forged".into()))
+        );
+    }
+
+    #[test]
+    fn registry_clears_later_owned_output_before_earlier_derivation() {
+        let registry = LabelRegistryBuilder::new()
+            .add_labeler(Arc::new(CopyAttribute {
+                kind: "Host",
+                input: "laterLabels",
+                output: "labels",
+            }))
+            .add_labeler(Arc::new(CopyAttribute {
+                kind: "Document",
+                input: "unused",
+                output: "laterLabels",
+            }))
+            .build()
+            .unwrap();
+        let mut resource = Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr("laterLabels", AttrValue::String("forged".into()));
+
+        registry.apply(&mut resource);
+
+        assert!(!resource.attributes().contains_key("labels"));
+        assert!(!resource.attributes().contains_key("laterLabels"));
     }
 
     #[test]

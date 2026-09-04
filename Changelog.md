@@ -36,9 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata for a mixed authorization state.
 - Labelers now implement read-only `derive` logic for one declared output.
   Receiver-style `labeler.apply(&mut resource)` remains available through the
-  non-overridable blanket `LabelerApply` implementation, which replaces or
-  removes caller-provided output values. Registries reject invalid, reserved,
-  and duplicate output ownership.
+  non-overridable blanket `LabelerApply` implementation, which hides the owned
+  output from derivation before replacing or removing caller-provided values.
+  Registries clear every owned output before applicability checks and ordered
+  derivation, and reject invalid, reserved, and duplicate output ownership.
 
 ### Changed
 
