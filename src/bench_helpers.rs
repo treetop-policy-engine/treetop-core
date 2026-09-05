@@ -23,7 +23,7 @@ use crate::policy_match;
 use crate::query;
 use crate::timers::PhaseTimer;
 use crate::traits::CedarAtom;
-use crate::types::{Action, AttrValue, Decision, Principal, Request, Resource, User};
+use crate::types::{Action, AttrValue, Principal, Request, Resource, User};
 
 pub fn precompute_permit_policies_len(set: &cedar_policy::PolicySet) -> usize {
     loader::precompute_permit_policies(set)
@@ -38,8 +38,9 @@ fn sample_principal_query_user() -> query::PrincipalQuery {
 
 fn sample_resource_query() -> query::ResourceQuery {
     let res = Resource::new("Host", "web-01.example.com")
+        .unwrap()
         .with_attr("name", AttrValue::String("web-01.example.com".to_string()));
-    query::ResourceQuery::from_resource(&res).expect("benchmark resource query must build")
+    query::ResourceQuery::from_resource(&res)
 }
 
 pub fn policy_match_principal_eq() -> u8 {
@@ -140,36 +141,40 @@ pub fn query_resource(namespace_depth: usize) -> Result<usize, PolicyError> {
     } else {
         format!("{}::Host", namespace.join("::"))
     };
-    let resource = Resource::new(kind, "web-01.example.com");
-    let query = query::ResourceQuery::from_resource(&resource)?;
+    let resource = Resource::new(kind, "web-01.example.com").unwrap();
+    let query = query::ResourceQuery::from_resource(&resource);
     Ok(query.uid.to_string().len() + query.type_name.to_string().len())
 }
 
 static REUSED_UID_REQUEST: LazyLock<Request> = LazyLock::new(|| Request {
-    principal: Principal::User(User::new(
-        "alice",
-        Some(vec![
-            "admins".to_string(),
-            "developers".to_string(),
-            "operators".to_string(),
-        ]),
-        Some(vec!["App".to_string(), "Core".to_string()]),
-    )),
+    principal: Principal::User(
+        User::new(
+            "alice",
+            Some(vec![
+                "admins".to_string(),
+                "developers".to_string(),
+                "operators".to_string(),
+            ]),
+            Some(vec!["App".to_string(), "Core".to_string()]),
+        )
+        .unwrap(),
+    ),
     action: Action::new(
         "view_host",
         Some(vec!["App".to_string(), "Core".to_string()]),
-    ),
-    resource: Resource::new("App::Core::Host", "web-01.example.com"),
+    )
+    .unwrap(),
+    resource: Resource::new("App::Core::Host", "web-01.example.com").unwrap(),
 });
 
 pub fn reused_request_uids() -> Result<usize, PolicyError> {
     let request = &*REUSED_UID_REQUEST;
-    let mut score = request.principal.cedar_entity_uid()?.id().unescaped().len()
-        + request.action.cedar_entity_uid()?.id().unescaped().len()
-        + request.resource.cedar_entity_uid()?.id().unescaped().len();
+    let mut score = request.principal.cedar_entity_uid().id().unescaped().len()
+        + request.action.cedar_entity_uid().id().unescaped().len()
+        + request.resource.cedar_entity_uid().id().unescaped().len();
     if let Principal::User(user) = &request.principal {
         for group in user.groups() {
-            score += group.cedar_entity_uid()?.id().unescaped().len();
+            score += group.cedar_entity_uid().id().unescaped().len();
         }
     }
     Ok(score)
@@ -273,12 +278,13 @@ static METRICS_ENGINE: LazyLock<PolicyEngine> = LazyLock::new(|| {
 });
 
 static METRICS_REQUEST: LazyLock<Request> = LazyLock::new(|| Request {
-    principal: Principal::User(User::new("target", None, None)),
+    principal: Principal::User(User::new("target", None, None).unwrap()),
     action: Action::new(
         "view_host",
         Some(vec!["App".to_string(), "Core".to_string()]),
-    ),
-    resource: Resource::new("Host", "web-01.example.com"),
+    )
+    .unwrap(),
+    resource: Resource::new("Host", "web-01.example.com").unwrap(),
 });
 
 struct DisabledEvaluationSink;
@@ -347,10 +353,11 @@ fn run_metrics_evaluations(iters: usize) -> u64 {
         let decision = METRICS_ENGINE
             .evaluate(&METRICS_REQUEST)
             .expect("metrics benchmark request must evaluate");
-        score = score.wrapping_add(match decision {
-            Decision::Allow { policies, .. } => policies.len() as u64,
-            Decision::Deny { .. } => 0,
-        });
+        score = score.wrapping_add(
+            decision
+                .permit_policies()
+                .map_or(0, |policies| policies.len() as u64),
+        );
     }
     score
 }

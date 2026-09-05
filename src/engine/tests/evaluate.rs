@@ -1,5 +1,53 @@
 use super::*;
 
+struct EchoOwnedOutput;
+
+impl Labeler for EchoOwnedOutput {
+    fn applies_to(&self, kind: &str) -> bool {
+        kind == "Host"
+    }
+
+    fn output(&self) -> &str {
+        "nameLabels"
+    }
+
+    fn derive(&self, resource: &Resource) -> Option<AttrValue> {
+        resource.attributes().get(self.output()).cloned()
+    }
+}
+
+struct CopyLaterOwnedOutput;
+
+impl Labeler for CopyLaterOwnedOutput {
+    fn applies_to(&self, kind: &str) -> bool {
+        kind == "Host"
+    }
+
+    fn output(&self) -> &str {
+        "nameLabels"
+    }
+
+    fn derive(&self, resource: &Resource) -> Option<AttrValue> {
+        resource.attributes().get("laterLabels").cloned()
+    }
+}
+
+struct OwnLaterOutputForOtherKind;
+
+impl Labeler for OwnLaterOutputForOtherKind {
+    fn applies_to(&self, kind: &str) -> bool {
+        kind == "Document"
+    }
+
+    fn output(&self) -> &str {
+        "laterLabels"
+    }
+
+    fn derive(&self, _resource: &Resource) -> Option<AttrValue> {
+        None
+    }
+}
+
 #[parameterized(
         alice_edit_allow = { "alice", "edit", "VacationPhoto94.jpg" },
         alice_view_allow = { "alice", "view", "VacationPhoto94.jpg" },
@@ -15,11 +63,12 @@ fn test_evaluate_requests(user: &str, action: &str, resource: &str) {
 
     // Convert the resource to the appropriate type
     let resource = Resource::new("Photo", resource.to_string())
+        .unwrap()
         .with_attr("name", AttrValue::String(resource.to_string()));
 
     let request = Request {
-        principal: Principal::User(User::new(user, None, None)),
-        action: Action::new(action, None),
+        principal: Principal::User(User::new(user, None, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource,
     };
     let decision = engine.evaluate(&request).unwrap();
@@ -36,11 +85,12 @@ fn test_create_host_requests(user: &str, action: &str, host_name: &str, ip: &str
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_CONTEXT).unwrap();
 
     let request = Request {
-        principal: Principal::User(User::new(user, None, None)),
-        action: Action::new(action, None),
+        principal: Principal::User(User::new(user, None, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource: Resource::new("Host", host_name)
+            .unwrap()
             .with_attr("name", AttrValue::String(host_name.into()))
-            .with_attr("ip", AttrValue::Ip(ip.into())),
+            .with_attr("ip", AttrValue::ip(ip).unwrap()),
     };
     let decision = engine.evaluate(&request).unwrap();
     snapshot_decision_engine!(decision);
@@ -56,11 +106,12 @@ fn test_policy_with_forbid(user: &str, action: &str, resource: &str) {
 
     // Convert the resource to the appropriate type
     let resource = Resource::new("Photo", resource.to_string())
+        .unwrap()
         .with_attr("name", AttrValue::String(resource.to_string()));
 
     let request = Request {
-        principal: Principal::User(User::new(user, None, None)),
-        action: Action::new(action, None),
+        principal: Principal::User(User::new(user, None, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource,
     };
     let decision = engine.evaluate(&request).unwrap();
@@ -85,22 +136,25 @@ fn test_policy_with_host_patterns(username: &str, host_name: &str) {
             Regex::new(r"example\.com$").unwrap(),
         ),
     ];
-    let labeler = RegexLabeler::new("Host", "name", "nameLabels", patterns.into_iter().collect());
+    let labeler =
+        RegexLabeler::new("Host", "name", "nameLabels", patterns.into_iter().collect()).unwrap();
 
-    let label_registry = LabelRegistryBuilder::new()
+    let label_registry = LabelRegistryBuilder::versioned("host-patterns-v1")
         .add_labeler(Arc::new(labeler))
-        .build();
+        .build()
+        .unwrap();
 
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
         .unwrap()
         .with_label_registry(label_registry);
 
     let request = Request {
-        principal: Principal::User(User::new(username, None, None)),
-        action: Action::new("create_host", None),
+        principal: Principal::User(User::new(username, None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
         resource: Resource::new("Host", host_name.to_string())
+            .unwrap()
             .with_attr("name", AttrValue::String(host_name.into()))
-            .with_attr("ip", AttrValue::Ip("10.0.0.1".into())),
+            .with_attr("ip", AttrValue::ip("10.0.0.1").unwrap()),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -117,17 +171,20 @@ fn derived_labels_cannot_be_forged_by_resource_attributes() {
             "example_domain".to_string(),
             Regex::new(r"example\.com$").unwrap(),
         )],
-    );
-    let registry = LabelRegistryBuilder::new()
+    )
+    .unwrap();
+    let registry = LabelRegistryBuilder::versioned("anti-forgery-v1")
         .add_labeler(Arc::new(labeler))
-        .build();
+        .build()
+        .unwrap();
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
         .unwrap()
         .with_label_registry(registry);
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("create_host", None),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
         resource: Resource::new("Host", "attacker.invalid")
+            .unwrap()
             .with_attr("name", AttrValue::String("attacker.invalid".into()))
             .with_attr(
                 "nameLabels",
@@ -135,7 +192,78 @@ fn derived_labels_cannot_be_forged_by_resource_attributes() {
             ),
     };
 
-    assert!(matches!(engine.evaluate(&request).unwrap(), Deny { .. }));
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
+}
+
+#[test]
+fn custom_labeler_cannot_echo_forged_authorization_label() {
+    let registry = LabelRegistryBuilder::versioned("custom-anti-forgery-v1")
+        .add_labeler(Arc::new(EchoOwnedOutput))
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
+        .unwrap()
+        .with_label_registry(registry);
+    let request = Request {
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
+        resource: Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr(
+                "nameLabels",
+                AttrValue::Set(vec![AttrValue::String("example_domain".into())]),
+            ),
+    };
+
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
+}
+
+#[test]
+fn non_applicable_labeler_still_removes_forged_owned_output() {
+    let labeler = RegexLabeler::new("Document", "name", "nameLabels", Vec::new()).unwrap();
+    let registry = LabelRegistryBuilder::versioned("non-applicable-anti-forgery-v1")
+        .add_labeler(Arc::new(labeler))
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
+        .unwrap()
+        .with_label_registry(registry);
+    let request = Request {
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
+        resource: Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr(
+                "nameLabels",
+                AttrValue::Set(vec![AttrValue::String("example_domain".into())]),
+            ),
+    };
+
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
+}
+
+#[test]
+fn earlier_labeler_cannot_consume_forged_later_owned_output() {
+    let registry = LabelRegistryBuilder::versioned("ordered-anti-forgery-v1")
+        .add_labeler(Arc::new(CopyLaterOwnedOutput))
+        .add_labeler(Arc::new(OwnLaterOutputForOtherKind))
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
+        .unwrap()
+        .with_label_registry(registry);
+    let request = Request {
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
+        resource: Resource::new("Host", "attacker.invalid")
+            .unwrap()
+            .with_attr(
+                "laterLabels",
+                AttrValue::Set(vec![AttrValue::String("example_domain".into())]),
+            ),
+    };
+
+    assert!(!engine.evaluate(&request).unwrap().is_allowed());
 }
 
 #[parameterized(
@@ -145,11 +273,12 @@ fn derived_labels_cannot_be_forged_by_resource_attributes() {
 fn test_only_here_policy(username: &str) {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_ACTION_ONLY_HERE).unwrap();
     let request = Request {
-        principal: Principal::User(User::new(username, None, None)),
-        action: Action::new("only_here", None),
+        principal: Principal::User(User::new(username, None, None).unwrap()),
+        action: Action::new("only_here", None).unwrap(),
         resource: Resource::new("Photo", "irrelevant_photo.jpg")
+            .unwrap()
             .with_attr("name", AttrValue::String("irrelevant.example.com".into()))
-            .with_attr("ip", AttrValue::Ip("10.0.0.1".into())),
+            .with_attr("ip", AttrValue::ip("10.0.0.1").unwrap()),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -164,9 +293,9 @@ fn test_only_here_policy(username: &str) {
 fn test_generic_policies(user: &str, action: &str, resource_id: &str) {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_GENERIC_RESOURCE).unwrap();
     let request = Request {
-        principal: Principal::User(User::new(user, None, None)),
-        action: Action::new(action, None),
-        resource: Resource::new("Gateway", resource_id.to_string()),
+        principal: Principal::User(User::new(user, None, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
+        resource: Resource::new("Gateway", resource_id.to_string()).unwrap(),
     };
     let decision = engine.evaluate(&request).unwrap();
     snapshot_decision_engine!(decision);
@@ -182,11 +311,11 @@ fn test_policy_with_groups(user: &str, group: &str, action: &str) {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_GROUPS).unwrap();
 
     // Convert the resource to the appropriate type
-    let resource = Resource::new("Photo", "photo.jpg".to_string());
+    let resource = Resource::new("Photo", "photo.jpg".to_string()).unwrap();
 
     let request = Request {
-        principal: Principal::User(User::new(user, Some(vec![group.to_string()]), None)),
-        action: Action::new(action, None),
+        principal: Principal::User(User::new(user, Some(vec![group.to_string()]), None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource,
     };
     let decision = engine.evaluate(&request).unwrap();
@@ -203,11 +332,11 @@ fn test_group_direct_access(group: &str, action: &str) {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_GROUPS).unwrap();
 
     // Convert the resource to the appropriate type
-    let resource = Resource::new("Photo", "photo.jpg".to_string());
+    let resource = Resource::new("Photo", "photo.jpg".to_string()).unwrap();
 
     let request = Request {
-        principal: Principal::Group(Group::new(group, None)),
-        action: Action::new(action, None),
+        principal: Principal::Group(Group::new(group, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource,
     };
 
@@ -219,9 +348,11 @@ fn test_group_direct_access(group: &str, action: &str) {
 fn test_policy_by_id() {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_BY_ID).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", Some(vec!["admins".to_string()]), None)),
-        action: Action::new("view", None),
-        resource: Resource::new("Photo", "VacationPhoto94.jpg".to_string()),
+        principal: Principal::User(
+            User::new("alice", Some(vec!["admins".to_string()]), None).unwrap(),
+        ),
+        action: Action::new("view", None).unwrap(),
+        resource: Resource::new("Photo", "VacationPhoto94.jpg".to_string()).unwrap(),
     };
     let decision = engine.evaluate(&request).unwrap();
     snapshot_decision_engine!(decision);
@@ -238,13 +369,17 @@ fn test_policy_by_id() {
 fn test_namespaces(user: &str, action: &str, group: &str, namespace: &str) {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_NAMESPACES).unwrap();
     let request = Request {
-        principal: Principal::User(User::new(
-            user,
-            Some(vec![group.to_string()]),
-            Some(vec![namespace.to_string()]),
-        )),
-        action: Action::new(action, Some(vec![namespace.to_string()])),
-        resource: Resource::new(format!("{}::{}", namespace, "Table"), "mytable".to_string()),
+        principal: Principal::User(
+            User::new(
+                user,
+                Some(vec![group.to_string()]),
+                Some(vec![namespace.to_string()]),
+            )
+            .unwrap(),
+        ),
+        action: Action::new(action, Some(vec![namespace.to_string()])).unwrap(),
+        resource: Resource::new(format!("{}::{}", namespace, "Table"), "mytable".to_string())
+            .unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -264,10 +399,11 @@ fn test_namespaces(user: &str, action: &str, group: &str, namespace: &str) {
 fn test_ip_functionality(ip: &str) {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_IP).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("create_host", None),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("create_host", None).unwrap(),
         resource: Resource::new("Host", "host.example.com".to_string())
-            .with_attr("ip", AttrValue::Ip(ip.to_string())),
+            .unwrap()
+            .with_attr("ip", AttrValue::ip(ip.to_string()).unwrap()),
     };
 
     let decision = engine.evaluate(&request).unwrap();
@@ -279,15 +415,7 @@ fn test_ip_functionality(ip: &str) {
         alice_ip_err_empty = { "" },
     )]
 fn test_ip_functionality_errors(ip: &str) {
-    let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_IP).unwrap();
-    let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("create_host", None),
-        resource: Resource::new("Host", "host.example.com".to_string())
-            .with_attr("ip", AttrValue::Ip(ip.to_string())),
-    };
-
-    assert!(engine.evaluate(&request).is_err());
+    assert!(AttrValue::ip(ip).is_err());
 }
 
 #[test]
@@ -303,19 +431,19 @@ permit (
 "#;
     let engine = PolicyEngine::new_from_str(policy).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("deploy", None),
-        resource: Resource::new("Service", "backend"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("deploy", None).unwrap(),
+        resource: Resource::new("Service", "backend").unwrap(),
     };
 
     let without_context = engine.evaluate(&request).unwrap();
-    assert!(matches!(without_context, Deny { .. }));
+    assert!(!without_context.is_allowed());
 
     let context = RequestContext::new()
         .with_attr("env", AttrValue::String("prod".to_string()))
         .with_attr("ticket", AttrValue::Long(1337));
     let with_context = engine.evaluate_with_context(&request, &context).unwrap();
-    assert!(matches!(with_context, Allow { .. }));
+    assert!(with_context.is_allowed());
 }
 
 #[test]
@@ -336,15 +464,15 @@ forbid (
 "#;
     let engine = PolicyEngine::new_from_str(policy).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "doc1"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "doc1").unwrap(),
     };
 
     let diagnostics = engine.evaluate_with_diagnostics(&request).unwrap();
-    assert!(matches!(diagnostics.decision, Deny { .. }));
+    assert!(!diagnostics.decision().is_allowed());
     assert_eq!(
-        diagnostics.matched_forbid_policy_ids,
+        diagnostics.matched_forbid_policy_ids(),
         vec!["deny_alice_read".to_string()]
     );
 }

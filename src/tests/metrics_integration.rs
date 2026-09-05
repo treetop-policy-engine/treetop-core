@@ -166,17 +166,20 @@ fn build_test_requests(ns: &Option<Vec<String>>) -> Vec<Request> {
 
     // Build all combinations: 3 principals × 3 actions = 9 requests
     for (user_name, groups) in users {
-        let principal = Principal::User(User::new(
-            user_name,
-            Some(groups.iter().map(|g| g.to_string()).collect()),
-            ns.clone(),
-        ));
+        let principal = Principal::User(
+            User::new(
+                user_name,
+                Some(groups.iter().map(|g| g.to_string()).collect()),
+                ns.clone(),
+            )
+            .unwrap(),
+        );
 
         for action_name in &actions {
             let request = Request {
                 principal: principal.clone(),
-                action: Action::new(*action_name, ns.clone()),
-                resource: Resource::new("Host", "hostname.example.com"),
+                action: Action::new(*action_name, ns.clone()).unwrap(),
+                resource: Resource::new("Host", "hostname.example.com").unwrap(),
             };
             requests.push(request);
         }
@@ -256,13 +259,16 @@ fn test_metrics_phase_tracking() {
 
     // Run a single evaluation
     let request = Request {
-        principal: Principal::User(User::new(
-            "alice",
-            Some(vec!["admins".to_string(), "users".to_string()]),
-            ns.clone(),
-        )),
-        action: Action::new("view_host", ns.clone()),
-        resource: Resource::new("Host", "hostname.example.com"),
+        principal: Principal::User(
+            User::new(
+                "alice",
+                Some(vec!["admins".to_string(), "users".to_string()]),
+                ns.clone(),
+            )
+            .unwrap(),
+        ),
+        action: Action::new("view_host", ns.clone()).unwrap(),
+        resource: Resource::new("Host", "hostname.example.com").unwrap(),
     };
 
     // The default observation adapter dispatches the legacy phase callback.
@@ -365,9 +371,9 @@ fn test_borrowed_observation_reports_action_and_lazy_policy_ids() {
     ] {
         engine
             .evaluate(&Request {
-                principal: Principal::User(User::new(user, None, None)),
-                action: Action::new(action, namespace.clone()),
-                resource: Resource::new("Document", "doc1"),
+                principal: Principal::User(User::new(user, None, None).unwrap()),
+                action: Action::new(action, namespace.clone()).unwrap(),
+                resource: Resource::new("Document", "doc1").unwrap(),
             })
             .expect("request should evaluate");
     }
@@ -437,22 +443,22 @@ fn test_panicking_metrics_sink_is_isolated_from_engine_operations() {
 
     let decision = engine
         .evaluate(&Request {
-            principal: Principal::User(User::new("alice", None, None)),
-            action: Action::new("read", None),
-            resource: Resource::new("Document", "public"),
+            principal: Principal::User(User::new("alice", None, None).unwrap()),
+            action: Action::new("read", None).unwrap(),
+            resource: Resource::new("Document", "public").unwrap(),
         })
         .expect("a metrics panic must not fail authorization");
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 
     crate::metrics::set_sink(Arc::new(PanickingBorrowedSink));
     let decision = engine
         .evaluate(&Request {
-            principal: Principal::User(User::new("alice", None, None)),
-            action: Action::new("read", None),
-            resource: Resource::new("Document", "public"),
+            principal: Principal::User(User::new("alice", None, None).unwrap()),
+            action: Action::new("read", None).unwrap(),
+            resource: Resource::new("Document", "public").unwrap(),
         })
         .expect("a borrowed metrics panic must not fail authorization");
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 
     engine
         .reload_from_str(r#"permit(principal, action, resource);"#)
@@ -497,57 +503,51 @@ fn test_matched_policies_tracking() {
 
     // Test 1: Alice should match the first permit policy (policy0)
     let request1 = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "doc1"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "doc1").unwrap(),
     };
     let result1 = engine
         .evaluate(&request1)
         .expect("Evaluation should succeed");
-    assert!(
-        matches!(result1, Decision::Allow { .. }),
-        "Alice should be allowed to read doc1"
-    );
+    assert!(result1.is_allowed(), "Alice should be allowed to read doc1");
 
     // Test 2: Bob should match the second permit policy (policy1)
     let request2 = Request {
-        principal: Principal::User(User::new("bob", None, None)),
-        action: Action::new("write", None),
-        resource: Resource::new("Document", "doc2"),
+        principal: Principal::User(User::new("bob", None, None).unwrap()),
+        action: Action::new("write", None).unwrap(),
+        resource: Resource::new("Document", "doc2").unwrap(),
     };
     let result2 = engine
         .evaluate(&request2)
         .expect("Evaluation should succeed");
-    assert!(
-        matches!(result2, Decision::Allow { .. }),
-        "Bob should be allowed to write doc2"
-    );
+    assert!(result2.is_allowed(), "Bob should be allowed to write doc2");
 
     // Test 3: Charlie should be denied by forbid policy (policy2)
     let request3 = Request {
-        principal: Principal::User(User::new("charlie", None, None)),
-        action: Action::new("delete", None),
-        resource: Resource::new("Document", "doc3"),
+        principal: Principal::User(User::new("charlie", None, None).unwrap()),
+        action: Action::new("delete", None).unwrap(),
+        resource: Resource::new("Document", "doc3").unwrap(),
     };
     let result3 = engine
         .evaluate(&request3)
         .expect("Evaluation should succeed");
     assert!(
-        matches!(result3, Decision::Deny { .. }),
+        !result3.is_allowed(),
         "Charlie should be denied delete on doc3"
     );
 
     // Test 4: A request that matches no policies
     let request4 = Request {
-        principal: Principal::User(User::new("david", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "doc4"),
+        principal: Principal::User(User::new("david", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "doc4").unwrap(),
     };
     let result4 = engine
         .evaluate(&request4)
         .expect("Evaluation should succeed");
     assert!(
-        matches!(result4, Decision::Deny { .. }),
+        !result4.is_allowed(),
         "David should be denied (no matching policy)"
     );
 
@@ -607,17 +607,14 @@ fn test_multiple_matched_policies() {
 
     // Alice reading public document should match both policies
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Document", "public"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Document", "public").unwrap(),
     };
     let result = engine
         .evaluate(&request)
         .expect("Evaluation should succeed");
-    assert!(
-        matches!(result, Decision::Allow { .. }),
-        "Alice should be allowed"
-    );
+    assert!(result.is_allowed(), "Alice should be allowed");
 
     // Verify both policies were matched
     let matched_policies = test_sink.matched_policies();

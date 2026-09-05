@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
 use super::*;
-use crate::labels::{LabelRegistryBuilder, RegexLabeler};
+use crate::labels::{LabelRegistry, LabelRegistryBuilder, Labeler, RegexLabeler};
 use crate::snapshot_decision;
 use crate::types::AttrValue;
-use crate::types::{Decision::Allow, Decision::Deny, Group, Resource};
+use crate::types::{Group, Resource};
 use crate::{Action, PolicyEffectFilter, PolicyMatchReason, RequestContext, User};
 use cedar_policy::{EntityUid, Schema};
 use regex::Regex;
@@ -310,37 +310,42 @@ fn engine_from_policy(policy_text: &str) -> PolicyEngine {
     PolicyEngine::new_from_str(policy_text).expect("policy should load")
 }
 
-fn schema_engine_from_policy(policy_text: &str, schema_text: &str) -> PolicyEngine {
+fn schema_engine_from_policy(
+    policy_text: &str,
+    schema_text: &str,
+) -> PolicyEngine<SchemaEnforcing> {
     PolicyEngine::new_from_str_with_cedarschema(policy_text, schema_text)
         .expect("schema + policy should load")
 }
 
 fn user_request(user: &str, action: &str, resource: Resource) -> Request {
     Request {
-        principal: Principal::User(User::new(user, None, None)),
-        action: Action::new(action, None),
+        principal: Principal::User(User::new(user, None, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource,
     }
 }
 
 fn group_request(group: &str, action: &str, resource: Resource) -> Request {
     Request {
-        principal: Principal::Group(Group::new(group, None)),
-        action: Action::new(action, None),
+        principal: Principal::Group(Group::new(group, None).unwrap()),
+        action: Action::new(action, None).unwrap(),
         resource,
     }
 }
 
 fn document_with_sensitivity(id: &str, sensitivity: i64) -> Resource {
-    Resource::new("Document", id).with_attr("sensitivity", AttrValue::Long(sensitivity))
+    Resource::new("Document", id)
+        .unwrap()
+        .with_attr("sensitivity", AttrValue::Long(sensitivity))
 }
 
 fn assert_allow(decision: &Decision) {
-    assert!(matches!(decision, Decision::Allow { .. }));
+    assert!(decision.is_allowed());
 }
 
 fn assert_deny(decision: &Decision) {
-    assert!(matches!(decision, Decision::Deny { .. }));
+    assert!(!decision.is_allowed());
 }
 
 mod core;

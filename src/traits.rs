@@ -2,8 +2,6 @@ use std::collections::HashMap;
 
 use cedar_policy::{EntityUid, RestrictedExpression};
 
-use crate::error::PolicyError;
-
 /// Anything that can become a Cedar‐typed atom, e.g. `User::"alice"`,
 /// `Action::"foo"`, `Group::"devs"`.
 ///
@@ -14,18 +12,14 @@ pub(crate) trait CedarAtom {
     fn cedar_type() -> &'static str;
 
     /// Build the attributes for this Cedar atom.
-    fn cedar_attr(&self) -> Result<HashMap<String, RestrictedExpression>, PolicyError> {
-        let res: HashMap<String, RestrictedExpression> = HashMap::new();
-        Ok(res)
+    fn cedar_attr(&self) -> HashMap<String, RestrictedExpression> {
+        HashMap::new()
     }
 
-    /// Build an EntityUid for atomic principal / action / resource slots.
-    fn cedar_entity_uid(&self) -> Result<EntityUid, PolicyError> {
-        self.cedar_id()
-            .parse::<EntityUid>()
-            .map_err(|e| PolicyError::ParseError(e.to_string()))
-    }
+    /// Borrow the already-validated Cedar entity UID.
+    fn cedar_entity_uid(&self) -> &EntityUid;
 
     /// The ID string, fully qualified (e.g. `User::"alice"` or `DNS::Action::"create_host"`).
+    #[cfg(test)]
     fn cedar_id(&self) -> String;
 }

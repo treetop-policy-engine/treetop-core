@@ -37,9 +37,9 @@ fn store_layout() -> PolicyStoreLayout {
 fn request(user: &str, store: &str, resource_kind: &str) -> Request {
     let namespace = (!store.is_empty()).then(|| vec![store.to_string()]);
     Request {
-        principal: Principal::User(User::new(user, None, None)),
-        action: Action::new("read", namespace),
-        resource: Resource::new(resource_kind, "resource-1"),
+        principal: Principal::User(User::new(user, None, None).unwrap()),
+        action: Action::new("read", namespace).unwrap(),
+        resource: Resource::new(resource_kind, "resource-1").unwrap(),
     }
 }
 
@@ -84,8 +84,8 @@ fn scoped_engine_matches_monolithic_decisions() {
         let monolithic_decision = monolithic.evaluate(&request).unwrap();
         let scoped_decision = scoped.evaluate(&request).unwrap();
         assert_eq!(
-            matches!(monolithic_decision, Decision::Allow { .. }),
-            matches!(scoped_decision, Decision::Allow { .. })
+            monolithic_decision.is_allowed(),
+            scoped_decision.is_allowed()
         );
     }
 }
@@ -294,7 +294,7 @@ fn administrative_policy_views_deduplicate_global_policies() {
     let engine =
         PolicyEngine::new_from_str_with_policy_stores(SCOPED_POLICIES, store_layout()).unwrap();
 
-    assert_eq!(engine.policies().unwrap().len(), 3);
+    assert_eq!(engine.policies().len(), 3);
     let listed = engine
         .list_policies_for_user_with_resource_and_effect(
             "blocked",
@@ -364,9 +364,11 @@ fn schema_text_constructor_validates_and_routes_stores() {
         PolicyEngine::new_from_str_with_cedarschema_and_policy_stores(policies, schema, layout)
             .unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, Some(vec!["DNS".to_string()]))),
-        action: Action::new("read", Some(vec!["DNS".to_string()])),
-        resource: Resource::new("DNS::Record", "record-1"),
+        principal: Principal::User(
+            User::new("alice", None, Some(vec!["DNS".to_string()])).unwrap(),
+        ),
+        action: Action::new("read", Some(vec!["DNS".to_string()])).unwrap(),
+        resource: Resource::new("DNS::Record", "record-1").unwrap(),
     };
 
     assert_allow(&engine.evaluate(&request).unwrap());

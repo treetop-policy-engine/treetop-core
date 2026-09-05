@@ -48,9 +48,9 @@ fn test_policy_reload_during_evaluation() {
     let eval_handle = thread::spawn(move || {
         for _ in 0..100 {
             let request = Request {
-                principal: Principal::User(User::new("alice", None, None)),
-                action: Action::new("read", None),
-                resource: Resource::new("Document", "doc1"),
+                principal: Principal::User(User::new("alice", None, None).unwrap()),
+                action: Action::new("read", None).unwrap(),
+                resource: Resource::new("Document", "doc1").unwrap(),
             };
             let _ = engine_eval.evaluate(&request);
             thread::sleep(Duration::from_micros(10));
@@ -117,18 +117,16 @@ fn test_snapshot_immutable_after_reload() {
 
     let engine = engine_from_policy(policy1);
     let snapshot1 = engine.current_snapshot();
-    let version1 = snapshot1.version();
+    let hash1 = Arc::clone(&snapshot1.revision.hash);
 
     engine.reload_from_str(policy2).unwrap();
 
-    // Old snapshot should still have old version
-    let still_version1 = snapshot1.version();
-    assert_eq!(version1.hash, still_version1.hash);
+    // Old snapshot should still have its old policy revision.
+    assert_eq!(hash1, snapshot1.revision.hash);
 
     // New snapshot should have new version
     let snapshot2 = engine.current_snapshot();
-    let version2 = snapshot2.version();
-    assert_ne!(version1.hash, version2.hash);
+    assert_ne!(hash1, snapshot2.revision.hash);
 }
 
 #[test]

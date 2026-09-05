@@ -1,16 +1,19 @@
 //! Qualified identifiers for Cedar entities with namespace support.
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use utoipa::ToSchema;
 
 use cedar_policy::{EntityId, EntityTypeName, EntityUid};
 
 use crate::error::PolicyError;
 
-use super::uid_cache::EntityUidCache;
+mod private {
+    pub trait Sealed {}
+}
 
 /// Marker type for Users
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
@@ -24,44 +27,107 @@ pub enum GroupMarker {}
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 pub enum ActionMarker {}
 
-/// A fully‐qualified identifier, with zero runtime cost over `(Vec<String>, String)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-pub struct QualifiedId<T> {
+impl private::Sealed for UserMarker {}
+impl private::Sealed for GroupMarker {}
+impl private::Sealed for ActionMarker {}
+
+/// Sealed marker implemented by the built-in Cedar identity kinds.
+///
+/// Use this bound for generic helpers that accept any built-in qualified ID:
+///
+/// ```
+/// use treetop_core::types::{ActionId, GroupId, QualifiedId, QualifiedIdKind, UserId};
+///
+/// fn raw_id<T: QualifiedIdKind>(id: &QualifiedId<T>) -> &str {
+///     id.id()
+/// }
+///
+/// assert_eq!(raw_id(&UserId::new("alice", None)?), "alice");
+/// assert_eq!(raw_id(&GroupId::new("admins", None)?), "admins");
+/// assert_eq!(raw_id(&ActionId::new("read", None)?), "read");
+/// # Ok::<(), treetop_core::PolicyError>(())
+/// ```
+///
+/// External implementations are forbidden so callers cannot substitute an
+/// unvalidated Cedar entity kind:
+///
+/// ```compile_fail
+/// use treetop_core::types::QualifiedIdKind;
+///
+/// struct CustomKind;
+/// impl QualifiedIdKind for CustomKind {
+///     const CEDAR_TYPE: &'static str = "Custom";
+/// }
+/// ```
+pub trait QualifiedIdKind: private::Sealed {
+    /// Cedar entity basename represented by this marker.
+    const CEDAR_TYPE: &'static str;
+}
+
+impl QualifiedIdKind for UserMarker {
+    const CEDAR_TYPE: &'static str = "User";
+}
+
+impl QualifiedIdKind for GroupMarker {
+    const CEDAR_TYPE: &'static str = "Group";
+}
+
+impl QualifiedIdKind for ActionMarker {
+    const CEDAR_TYPE: &'static str = "Action";
+}
+
+/// A fully qualified, validated identifier with its parsed Cedar UID cached.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct QualifiedId<T: QualifiedIdKind> {
     id: String,
     namespace: Vec<String>,
     #[serde(skip)]
     _marker: PhantomData<T>,
     #[serde(skip)]
-    uid_cache: EntityUidCache,
+    uid: EntityUid,
 }
 
-impl<T> QualifiedId<T> {
-    /// Construct from its parts.
-    ///
-    /// Validation is performed when converting to a Cedar entity UID. Prefer
-    /// [`Self::try_new`] at an untrusted input boundary.
-    pub fn new(id: impl Into<String>, namespace: Option<Vec<String>>) -> Self {
-        QualifiedId {
-            id: id.into(),
-            namespace: namespace.unwrap_or_default(),
-            _marker: PhantomData,
-            uid_cache: EntityUidCache::default(),
-        }
+impl<T: QualifiedIdKind> PartialEq for QualifiedId<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.namespace == other.namespace
     }
+}
 
+impl<T: QualifiedIdKind> Eq for QualifiedId<T> {}
+
+impl<T: QualifiedIdKind> Hash for QualifiedId<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.namespace.hash(state);
+    }
+}
+
+impl<T: QualifiedIdKind> QualifiedId<T> {
     /// Construct a non-empty identifier with a valid Cedar namespace.
-    pub fn try_new(
-        id: impl Into<String>,
-        namespace: Option<Vec<String>>,
-    ) -> Result<Self, PolicyError> {
-        let qualified = Self::new(id, namespace);
-        qualified.validate_namespace_with_type("Entity")?;
-        if qualified.id.is_empty() {
+    pub fn new(id: impl Into<String>, namespace: Option<Vec<String>>) -> Result<Self, PolicyError> {
+        let id = id.into();
+        if id.is_empty() {
             return Err(PolicyError::InvalidFormat(
                 "entity identifier cannot be empty".to_string(),
             ));
         }
-        Ok(qualified)
+        let namespace = namespace.unwrap_or_default();
+        let type_name = Self::validate_namespace_with_type(&namespace)?;
+        let uid = EntityUid::from_type_name_and_id(type_name, EntityId::new(&id));
+        Ok(Self {
+            id,
+            namespace,
+            _marker: PhantomData,
+            uid,
+        })
+    }
+
+    /// Backward-compatible name for [`Self::new`].
+    pub fn try_new(
+        id: impl Into<String>,
+        namespace: Option<Vec<String>>,
+    ) -> Result<Self, PolicyError> {
+        Self::new(id, namespace)
     }
 
     /// Get the raw id.
@@ -74,36 +140,20 @@ impl<T> QualifiedId<T> {
         &self.namespace
     }
 
-    /// Render as `"Ns1::Ns2::Type::"id""`.
-    pub fn fmt_qualified(&self, ty: &str) -> String {
-        let mut parts = self.namespace.join("::");
-        if !parts.is_empty() {
-            parts.push_str("::");
-        }
-        let escaped = EntityId::new(&self.id).escaped();
-        format!(r#"{parts}{ty}::"{escaped}""#)
+    /// Render the canonical Cedar entity UID.
+    pub fn fmt_qualified(&self) -> String {
+        self.uid.to_string()
     }
 
-    pub(crate) fn cedar_entity_uid(&self, ty: &str) -> Result<EntityUid, PolicyError> {
-        self.uid_cache.get_or_build(|| {
-            if self.id.is_empty() {
-                return Err(PolicyError::InvalidFormat(
-                    "entity identifier cannot be empty".to_string(),
-                ));
-            }
-            let type_name = self.validate_namespace_with_type(ty)?;
-            Ok(EntityUid::from_type_name_and_id(
-                type_name,
-                EntityId::new(&self.id),
-            ))
-        })
+    pub(crate) fn cedar_entity_uid(&self) -> &EntityUid {
+        &self.uid
     }
 
-    fn validate_namespace_with_type(&self, ty: &str) -> Result<EntityTypeName, PolicyError> {
-        let type_name = if self.namespace.is_empty() {
-            ty.to_string()
+    fn validate_namespace_with_type(namespace: &[String]) -> Result<EntityTypeName, PolicyError> {
+        let type_name = if namespace.is_empty() {
+            T::CEDAR_TYPE.to_string()
         } else {
-            format!("{}::{ty}", self.namespace.join("::"))
+            format!("{}::{}", namespace.join("::"), T::CEDAR_TYPE)
         };
         type_name.parse().map_err(|e| {
             PolicyError::InvalidFormat(format!("invalid Cedar entity type '{type_name}': {e}"))
@@ -111,7 +161,24 @@ impl<T> QualifiedId<T> {
     }
 }
 
-impl<T> Display for QualifiedId<T> {
+#[derive(Deserialize)]
+struct QualifiedIdRepr {
+    id: String,
+    #[serde(default)]
+    namespace: Vec<String>,
+}
+
+impl<'de, T: QualifiedIdKind> Deserialize<'de> for QualifiedId<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let repr = QualifiedIdRepr::deserialize(deserializer)?;
+        Self::new(repr.id, Some(repr.namespace)).map_err(D::Error::custom)
+    }
+}
+
+impl<T: QualifiedIdKind> Display for QualifiedId<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         // We don't know `T`'s name here; we'll implement Display on the wrappers.
         write!(f, "{}", self.id)
@@ -137,28 +204,28 @@ mod tests {
 
     #[test]
     fn test_qualified_id_display() {
-        let id: UserId = QualifiedId::new("alice", None);
+        let id: UserId = QualifiedId::new("alice", None).unwrap();
         assert_eq!(format!("{}", id), "alice");
     }
 
     #[test]
     fn test_qualified_id_fmt_qualified() {
-        let id: UserId = QualifiedId::new("alice", Some(vec!["Infra".to_string()]));
-        assert_eq!(id.fmt_qualified("User"), r#"Infra::User::"alice""#);
+        let id: UserId = QualifiedId::new("alice", Some(vec!["Infra".to_string()])).unwrap();
+        assert_eq!(id.fmt_qualified(), r#"Infra::User::"alice""#);
     }
 
     #[test]
     fn test_qualified_id_namespace_accessor() {
         let id: UserId =
-            QualifiedId::new("alice", Some(vec!["App".to_string(), "Core".to_string()]));
+            QualifiedId::new("alice", Some(vec!["App".to_string(), "Core".to_string()])).unwrap();
         assert_eq!(id.namespace(), &["App".to_string(), "Core".to_string()]);
     }
 
     #[test]
     fn test_qualified_id_empty_namespace() {
-        let id: UserId = QualifiedId::new("alice", None);
+        let id: UserId = QualifiedId::new("alice", None).unwrap();
         assert_eq!(id.namespace(), &[] as &[String]);
-        assert_eq!(id.fmt_qualified("User"), r#"User::"alice""#);
+        assert_eq!(id.fmt_qualified(), r#"User::"alice""#);
     }
 
     #[test]
@@ -170,24 +237,25 @@ mod tests {
                 "Admin".to_string(),
                 "Actions".to_string(),
             ]),
-        );
+        )
+        .unwrap();
         assert_eq!(
-            id.fmt_qualified("Action"),
+            id.fmt_qualified(),
             r#"App::Admin::Actions::Action::"delete""#
         );
     }
 
     #[test]
     fn test_qualified_id_with_special_chars() {
-        let id: UserId = QualifiedId::new("alice@example.com", None);
+        let id: UserId = QualifiedId::new("alice@example.com", None).unwrap();
         assert_eq!(id.id(), "alice@example.com");
     }
 
     #[test]
     fn test_qualified_id_types() {
-        let user_id: UserId = QualifiedId::new("alice", None);
-        let group_id: GroupId = QualifiedId::new("admins", None);
-        let action_id: ActionId = QualifiedId::new("read", None);
+        let user_id: UserId = QualifiedId::new("alice", None).unwrap();
+        let group_id: GroupId = QualifiedId::new("admins", None).unwrap();
+        let action_id: ActionId = QualifiedId::new("read", None).unwrap();
 
         assert_eq!(user_id.id(), "alice");
         assert_eq!(group_id.id(), "admins");
@@ -196,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_qualified_id_clone() {
-        let original: UserId = QualifiedId::new("alice", Some(vec!["App".to_string()]));
+        let original: UserId = QualifiedId::new("alice", Some(vec!["App".to_string()])).unwrap();
         let cloned = original.clone();
         assert_eq!(original.id(), cloned.id());
         assert_eq!(original.namespace(), cloned.namespace());
@@ -204,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_qualified_id_serialization() {
-        let id: UserId = QualifiedId::new("alice", Some(vec!["App".to_string()]));
+        let id: UserId = QualifiedId::new("alice", Some(vec!["App".to_string()])).unwrap();
         let serialized = serde_json::to_value(&id).unwrap();
         let deserialized: UserId = serde_json::from_value(serialized).unwrap();
         assert_eq!(id.id(), deserialized.id());
@@ -213,9 +281,9 @@ mod tests {
 
     #[test]
     fn cached_uid_does_not_change_value_semantics() {
-        let cached: UserId = QualifiedId::new("alice", Some(vec!["App".to_string()]));
+        let cached: UserId = QualifiedId::new("alice", Some(vec!["App".to_string()])).unwrap();
         let uncached = cached.clone();
-        cached.cedar_entity_uid("User").unwrap();
+        cached.cedar_entity_uid();
 
         assert_eq!(cached, uncached);
         assert_eq!(
@@ -232,14 +300,13 @@ mod tests {
 
     #[test]
     fn cached_uid_initialization_is_thread_safe() {
-        let id = Arc::new(UserId::new(
-            "alice",
-            Some(vec!["App".to_string(), "Core".to_string()]),
-        ));
+        let id = Arc::new(
+            UserId::new("alice", Some(vec!["App".to_string(), "Core".to_string()])).unwrap(),
+        );
         let handles = (0..8)
             .map(|_| {
                 let id = Arc::clone(&id);
-                thread::spawn(move || id.cedar_entity_uid("User").unwrap())
+                thread::spawn(move || id.cedar_entity_uid().clone())
             })
             .collect::<Vec<_>>();
 
@@ -253,19 +320,15 @@ mod tests {
 
     #[test]
     fn test_qualified_id_empty_id() {
-        let id: UserId = QualifiedId::new("", None);
-        assert_eq!(id.id(), "");
-        assert!(id.cedar_entity_uid("User").is_err());
+        let result: Result<UserId, _> = QualifiedId::new("", None);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_qualified_id_escapes_entity_id() {
         let id: UserId = QualifiedId::try_new("a\"b\\c", None).unwrap();
-        assert_eq!(id.fmt_qualified("User"), r#"User::"a\"b\\c""#);
-        assert_eq!(
-            id.cedar_entity_uid("User").unwrap().id().unescaped(),
-            "a\"b\\c"
-        );
+        assert_eq!(id.fmt_qualified(), r#"User::"a\"b\\c""#);
+        assert_eq!(id.cedar_entity_uid().id().unescaped(), "a\"b\\c");
     }
 
     #[test]
@@ -276,8 +339,20 @@ mod tests {
     }
 
     #[test]
+    fn deserialization_cannot_bypass_validation() {
+        assert!(serde_json::from_value::<UserId>(serde_json::json!({"id": ""})).is_err());
+        assert!(
+            serde_json::from_value::<UserId>(serde_json::json!({
+                "id": "alice",
+                "namespace": ["invalid namespace"]
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn test_qualified_id_from_string() {
-        let id: UserId = QualifiedId::new("alice".to_string(), None);
+        let id: UserId = QualifiedId::new("alice".to_string(), None).unwrap();
         assert_eq!(id.id(), "alice");
     }
 }

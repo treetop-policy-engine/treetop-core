@@ -103,9 +103,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Test 1: Admin user - should allow all actions
     let alice_request = Request {
-        principal: Principal::User(User::new("alice", Some(vec!["admins".to_string()]), None)),
-        action: Action::new("delete_host", None),
-        resource: Resource::new("Host", "web-01.example.com"),
+        principal: Principal::User(
+            User::new("alice", Some(vec!["admins".to_string()]), None).unwrap(),
+        ),
+        action: Action::new("delete_host", None).unwrap(),
+        resource: Resource::new("Host", "web-01.example.com").unwrap(),
     };
 
     println!("1. Evaluating: alice (admin) deleting host");
@@ -114,9 +116,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Test 2: Regular user - should allow view only
     let charlie_request = Request {
-        principal: Principal::User(User::new("charlie", Some(vec!["users".to_string()]), None)),
-        action: Action::new("view_host", None),
-        resource: Resource::new("Host", "web-01.example.com"),
+        principal: Principal::User(
+            User::new("charlie", Some(vec!["users".to_string()]), None).unwrap(),
+        ),
+        action: Action::new("view_host", None).unwrap(),
+        resource: Resource::new("Host", "web-01.example.com").unwrap(),
     };
 
     println!("2. Evaluating: charlie (user) viewing host");
@@ -125,13 +129,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Test 3: Explicit forbid - bob cannot delete
     let bob_request = Request {
-        principal: Principal::User(User::new(
-            "bob",
-            Some(vec!["admins".to_string()]), // Even though bob is admin
-            None,
-        )),
-        action: Action::new("delete_host", None),
-        resource: Resource::new("Host", "web-01.example.com"),
+        principal: Principal::User(
+            User::new(
+                "bob",
+                Some(vec!["admins".to_string()]), // Even though bob is admin
+                None,
+            )
+            .unwrap(),
+        ),
+        action: Action::new("delete_host", None).unwrap(),
+        resource: Resource::new("Host", "web-01.example.com").unwrap(),
     };
 
     println!("3. Evaluating: bob (admin but forbidden) deleting host");
@@ -140,9 +147,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Test 4: Charlie trying to delete - should deny
     let charlie_delete_request = Request {
-        principal: Principal::User(User::new("charlie", Some(vec!["users".to_string()]), None)),
-        action: Action::new("delete_host", None),
-        resource: Resource::new("Host", "web-01.example.com"),
+        principal: Principal::User(
+            User::new("charlie", Some(vec!["users".to_string()]), None).unwrap(),
+        ),
+        action: Action::new("delete_host", None).unwrap(),
+        resource: Resource::new("Host", "web-01.example.com").unwrap(),
     };
 
     println!("4. Evaluating: charlie (user) deleting host");

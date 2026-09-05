@@ -46,15 +46,15 @@ impl PrincipalQuery {
         })
     }
 
-    pub(crate) fn from_principal(principal: &Principal) -> Result<Self, PolicyError> {
-        let uid = principal.cedar_entity_uid()?;
+    pub(crate) fn from_principal(principal: &Principal) -> Self {
+        let uid = principal.cedar_entity_uid().clone();
         let type_name = entity_type_name_from_uid(&uid);
 
         let parents = match principal {
             Principal::User(user) => {
                 let mut parents = HashSet::with_capacity(user.groups().len());
                 for group in user.groups() {
-                    parents.insert(group.cedar_entity_uid()?);
+                    parents.insert(group.cedar_entity_uid().clone());
                 }
                 parents
             }
@@ -66,11 +66,11 @@ impl PrincipalQuery {
             }
         };
 
-        Ok(Self {
+        Self {
             uid,
             type_name,
             parents,
-        })
+        }
     }
 }
 
@@ -81,10 +81,10 @@ pub(crate) struct ResourceQuery {
 }
 
 impl ResourceQuery {
-    pub(crate) fn from_resource(resource: &Resource) -> Result<Self, PolicyError> {
-        let uid = resource.cedar_entity_uid()?;
+    pub(crate) fn from_resource(resource: &Resource) -> Self {
+        let uid = resource.cedar_entity_uid().clone();
         let type_name = uid.type_name().clone();
-        Ok(Self { uid, type_name })
+        Self { uid, type_name }
     }
 }
 
@@ -94,10 +94,10 @@ pub(crate) struct ActionQuery {
 }
 
 impl ActionQuery {
-    pub(crate) fn from_action(action: &Action) -> Result<Self, PolicyError> {
-        Ok(Self {
-            uid: action.cedar_entity_uid()?,
-        })
+    pub(crate) fn from_action(action: &Action) -> Self {
+        Self {
+            uid: action.cedar_entity_uid().clone(),
+        }
     }
 }
 

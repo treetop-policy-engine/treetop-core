@@ -7,7 +7,6 @@ use cedar_policy::{EntityUid, RestrictedExpression};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::error::PolicyError;
 use crate::traits::CedarAtom;
 
 use super::cedar_type::CedarType;
@@ -32,14 +31,14 @@ impl Display for Principal {
 
 /// Dispatch the CedarAtom trait to the correct type.
 impl CedarAtom for Principal {
-    fn cedar_entity_uid(&self) -> Result<EntityUid, PolicyError> {
+    fn cedar_entity_uid(&self) -> &EntityUid {
         match self {
             Principal::User(user) => user.cedar_entity_uid(),
             Principal::Group(group) => group.cedar_entity_uid(),
         }
     }
 
-    fn cedar_attr(&self) -> Result<HashMap<String, RestrictedExpression>, PolicyError> {
+    fn cedar_attr(&self) -> HashMap<String, RestrictedExpression> {
         match self {
             Principal::User(user) => user.cedar_attr(),
             Principal::Group(group) => group.cedar_attr(),
@@ -50,6 +49,7 @@ impl CedarAtom for Principal {
         CedarType::Principal.as_ref()
     }
 
+    #[cfg(test)]
     fn cedar_id(&self) -> String {
         match self {
             Principal::User(user) => user.cedar_id(),
@@ -65,28 +65,28 @@ mod tests {
 
     #[test]
     fn test_principal_display_user() {
-        let user = User::new("alice", None, None);
+        let user = User::new("alice", None, None).unwrap();
         let principal = Principal::User(user);
         assert_eq!(format!("{}", principal), r#"User::"alice""#);
     }
 
     #[test]
     fn test_principal_display_group() {
-        let group = Group::new("admins", None);
+        let group = Group::new("admins", None).unwrap();
         let principal = Principal::Group(group);
         assert_eq!(format!("{}", principal), r#"Group::"admins""#);
     }
 
     #[test]
     fn test_principal_cedar_id_user() {
-        let user = User::new("alice", None, None);
+        let user = User::new("alice", None, None).unwrap();
         let principal = Principal::User(user);
         assert_eq!(principal.cedar_id(), r#"User::"alice""#);
     }
 
     #[test]
     fn test_principal_cedar_id_group() {
-        let group = Group::new("admins", None);
+        let group = Group::new("admins", None).unwrap();
         let principal = Principal::Group(group);
         assert_eq!(principal.cedar_id(), r#"Group::"admins""#);
     }
@@ -98,32 +98,32 @@ mod tests {
 
     #[test]
     fn test_principal_cedar_entity_uid_user() {
-        let user = User::new("alice", None, None);
+        let user = User::new("alice", None, None).unwrap();
         let principal = Principal::User(user);
-        let entity_uid = principal.cedar_entity_uid().unwrap();
+        let entity_uid = principal.cedar_entity_uid();
         assert_eq!(entity_uid.to_string(), r#"User::"alice""#);
     }
 
     #[test]
     fn test_principal_cedar_entity_uid_group() {
-        let group = Group::new("admins", None);
+        let group = Group::new("admins", None).unwrap();
         let principal = Principal::Group(group);
-        let entity_uid = principal.cedar_entity_uid().unwrap();
+        let entity_uid = principal.cedar_entity_uid();
         assert_eq!(entity_uid.to_string(), r#"Group::"admins""#);
     }
 
     #[test]
     fn test_principal_cedar_attr() {
-        let user = User::new("alice", None, None);
+        let user = User::new("alice", None, None).unwrap();
         let principal = Principal::User(user);
-        let attrs = principal.cedar_attr().unwrap();
+        let attrs = principal.cedar_attr();
         // Should have empty attributes by default
         assert_eq!(attrs.len(), 0);
     }
 
     #[test]
     fn test_principal_serialization() {
-        let user = User::new("alice", None, None);
+        let user = User::new("alice", None, None).unwrap();
         let principal = Principal::User(user);
 
         let serialized = serde_json::to_value(&principal).unwrap();
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_principal_clone() {
-        let user = User::new("alice", None, None);
+        let user = User::new("alice", None, None).unwrap();
         let principal = Principal::User(user);
         let cloned = principal.clone();
         assert_eq!(principal.cedar_id(), cloned.cedar_id());
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_principal_debug() {
-        let user = User::new("alice", None, None);
+        let user = User::new("alice", None, None).unwrap();
         let principal = Principal::User(user);
         let debug_str = format!("{:?}", principal);
         assert!(debug_str.contains("User"));
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn test_principal_with_namespace() {
-        let user = User::new("alice", None, Some(vec!["App".to_string()]));
+        let user = User::new("alice", None, Some(vec!["App".to_string()])).unwrap();
         let principal = Principal::User(user);
         assert_eq!(principal.cedar_id(), r#"App::User::"alice""#);
     }

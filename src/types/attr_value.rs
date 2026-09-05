@@ -1,8 +1,51 @@
 //! Attribute values for Cedar entities.
 
-use cedar_policy::RestrictedExpression;
-use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter, Result as FmtResult};
+
+use cedar_policy::{Context, RestrictedExpression};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use utoipa::ToSchema;
+
+use crate::PolicyError;
+
+/// An IP address or network accepted by Cedar's `ip()` extension.
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct CedarIp(String);
+
+impl CedarIp {
+    /// Validate and construct a Cedar IP address or network.
+    pub fn new(value: impl Into<String>) -> Result<Self, PolicyError> {
+        let value = value.into();
+        Context::from_pairs([("ip".to_string(), RestrictedExpression::new_ip(&value))]).map_err(
+            |error| {
+                PolicyError::InvalidFormat(format!("invalid Cedar IP address '{value}': {error}"))
+            },
+        )?;
+        Ok(Self(value))
+    }
+
+    /// Borrow the original, validated representation.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for CedarIp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.write_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CedarIp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(D::Error::custom)
+    }
+}
 
 /// Attribute values that can be attached to Cedar entities.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq, Hash)]
@@ -11,7 +54,7 @@ pub enum AttrValue {
     String(String),
     Bool(bool),
     Long(i64),
-    Ip(String),
+    Ip(CedarIp),
     #[schema(no_recursion)]
     Set(Vec<AttrValue>), // typically Set<String>; we accept nested AttrValue for convenience
 }
@@ -23,9 +66,14 @@ impl AttrValue {
             AttrValue::String(s) => RE::new_string(s.clone()),
             AttrValue::Bool(b) => RE::new_bool(*b),
             AttrValue::Long(n) => RE::new_long(*n),
-            AttrValue::Ip(s) => RE::new_ip(s.clone()), // "192.0.2.1" or "10.0.0.0/8"
+            AttrValue::Ip(ip) => RE::new_ip(ip.as_str()),
             AttrValue::Set(xs) => RE::new_set(xs.iter().map(|x| x.to_re())),
         }
+    }
+
+    /// Validate and construct an IP attribute.
+    pub fn ip(value: impl Into<String>) -> Result<Self, PolicyError> {
+        Ok(Self::Ip(CedarIp::new(value)?))
     }
 }
 
@@ -79,8 +127,8 @@ mod tests {
 
     #[test]
     fn test_attrvalue_ip_to_re() {
-        let attr_single = AttrValue::Ip("192.0.2.1".to_string());
-        let attr_cidr = AttrValue::Ip("10.0.0.0/8".to_string());
+        let attr_single = AttrValue::ip("192.0.2.1").unwrap();
+        let attr_cidr = AttrValue::ip("10.0.0.0/8").unwrap();
         let _re1 = attr_single.to_re();
         let _re2 = attr_cidr.to_re();
     }
@@ -97,7 +145,7 @@ mod tests {
             AttrValue::String("hello".to_string()),
             AttrValue::Bool(true),
             AttrValue::Long(123),
-            AttrValue::Ip("10.0.0.1".to_string()),
+            AttrValue::ip("10.0.0.1").unwrap(),
         ];
 
         for attr in test_cases {
@@ -130,5 +178,17 @@ mod tests {
         let attr = AttrValue::String("test".to_string());
         let debug_str = format!("{:?}", attr);
         assert!(debug_str.contains("String"));
+    }
+
+    #[test]
+    fn invalid_ip_cannot_be_constructed_or_deserialized() {
+        assert!(CedarIp::new("not an ip").is_err());
+        assert!(serde_json::from_str::<CedarIp>("\"not an ip\"").is_err());
+        assert!(
+            serde_json::from_value::<AttrValue>(
+                serde_json::json!({"type": "Ip", "value": "not an ip"})
+            )
+            .is_err()
+        );
     }
 }

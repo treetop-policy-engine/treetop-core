@@ -492,8 +492,8 @@ mod tests {
         let layout = layout();
         let store = layout
             .resolve_request(
-                &Action::new("read", Some(vec!["ExampleCo".into(), "DNS".into()])),
-                &Resource::new("ExampleCo::DNS::Host", "host-1"),
+                &Action::new("read", Some(vec!["ExampleCo".into(), "DNS".into()])).unwrap(),
+                &Resource::new("ExampleCo::DNS::Host", "host-1").unwrap(),
             )
             .unwrap();
         assert_eq!(layout.stores()[store].id().as_str(), "dns");
@@ -502,8 +502,8 @@ mod tests {
     #[test]
     fn rejects_cross_store_requests() {
         let result = layout().resolve_request(
-            &Action::new("read", Some(vec!["ExampleCo".into(), "DNS".into()])),
-            &Resource::new("ExampleCo::WWW::Page", "page-1"),
+            &Action::new("read", Some(vec!["ExampleCo".into(), "DNS".into()])).unwrap(),
+            &Resource::new("ExampleCo::WWW::Page", "page-1").unwrap(),
         );
         assert!(matches!(
             result,
@@ -514,8 +514,8 @@ mod tests {
     #[test]
     fn namespace_matching_is_segment_aware() {
         let result = layout().resolve_request(
-            &Action::new("read", Some(vec!["ExampleCo".into(), "DNSAdmin".into()])),
-            &Resource::new("ExampleCo::DNSAdmin::Host", "host-1"),
+            &Action::new("read", Some(vec!["ExampleCo".into(), "DNSAdmin".into()])).unwrap(),
+            &Resource::new("ExampleCo::DNSAdmin::Host", "host-1").unwrap(),
         );
         assert!(matches!(
             result,

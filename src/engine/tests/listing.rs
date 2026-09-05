@@ -20,7 +20,7 @@ fn test_list_permissions(
     assert_eq!(user_policies.policies().len(), expected_policies);
 
     // Fetch the actions by name, this list is automatically sorted
-    let actions = user_policies.actions_by_name();
+    let actions = user_policies.candidate_actions_by_name();
 
     assert_eq!(actions.len(), expected_actions.len());
 
@@ -87,7 +87,7 @@ fn test_list_policies_with_groups(
         user_policies.policies().len()
     );
 
-    let actions = user_policies.actions_by_name();
+    let actions = user_policies.candidate_actions_by_name();
     assert_eq!(
         actions.len(),
         expected_actions.len(),
@@ -245,13 +245,13 @@ fn test_list_policies_with_optional_resource_constraints() {
         .expect("Failed listing policies");
     assert_eq!(without_resource.policies().len(), 3);
 
-    let photo = Resource::new("Photo", "vacation.jpg");
+    let photo = Resource::new("Photo", "vacation.jpg").unwrap();
     let with_photo = engine
         .list_policies_for_user_with_resource("alice", &[], &[], Some(&photo))
         .expect("Failed listing policies with resource");
     assert_eq!(with_photo.policies().len(), 2);
 
-    let host = Resource::new("Host", "web-01");
+    let host = Resource::new("Host", "web-01").unwrap();
     let with_host = engine
         .list_policies_for_user_with_resource("alice", &[], &[], Some(&host))
         .expect("Failed listing policies with host resource");
@@ -272,25 +272,19 @@ fn test_group_membership_is_evaluated_per_request_and_per_listing_call() {
 
     // Same user, no groups: should not match group-based policies.
     let no_group_request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("view", None),
-        resource: Resource::new("Photo", "photo.jpg"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("view", None).unwrap(),
+        resource: Resource::new("Photo", "photo.jpg").unwrap(),
     };
-    assert!(matches!(
-        engine.evaluate(&no_group_request).unwrap(),
-        Deny { .. }
-    ));
+    assert!(!engine.evaluate(&no_group_request).unwrap().is_allowed());
 
     // Same user, with users group: now group policy should match.
     let users_group_request = Request {
-        principal: Principal::User(User::new("alice", Some(vec!["users".into()]), None)),
-        action: Action::new("view", None),
-        resource: Resource::new("Photo", "photo.jpg"),
+        principal: Principal::User(User::new("alice", Some(vec!["users".into()]), None).unwrap()),
+        action: Action::new("view", None).unwrap(),
+        resource: Resource::new("Photo", "photo.jpg").unwrap(),
     };
-    assert!(matches!(
-        engine.evaluate(&users_group_request).unwrap(),
-        Allow { .. }
-    ));
+    assert!(engine.evaluate(&users_group_request).unwrap().is_allowed());
 
     // Same engine + same user id for listing, but different group input:
     // group membership is taken from call input, not cached globally.
@@ -313,9 +307,9 @@ fn test_group_membership_is_evaluated_per_request_and_per_listing_call() {
 fn test_list_policies_mirrors_evaluate_input_shape() {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_GROUPS).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", Some(vec!["admins".into()]), None)),
-        action: Action::new("view", None),
-        resource: Resource::new("Photo", "photo.jpg"),
+        principal: Principal::User(User::new("alice", Some(vec!["admins".into()]), None).unwrap()),
+        action: Action::new("view", None).unwrap(),
+        resource: Resource::new("Photo", "photo.jpg").unwrap(),
     };
 
     let listed = engine.list_policies(&request).unwrap();
@@ -363,7 +357,7 @@ fn test_list_policies_output_is_deterministic() {
 #[test]
 fn test_list_policies_effect_filter_defaults_to_permit_and_can_filter() {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_FORBID).unwrap();
-    let resource = Resource::new("Photo", "VacationPhoto94.jpg");
+    let resource = Resource::new("Photo", "VacationPhoto94.jpg").unwrap();
 
     // The safe default only returns permit candidates.
     let default_permit = engine
@@ -437,7 +431,7 @@ forbid (principal == User::"alice", action == Action::"delete", resource);
         .unwrap();
 
     assert_eq!(
-        candidates.actions_by_name(),
+        candidates.candidate_actions_by_name(),
         vec![r#"Action::"read""#.to_string()]
     );
     assert!(candidates.has_non_scope_constraints());
@@ -447,13 +441,13 @@ forbid (principal == User::"alice", action == Action::"delete", resource);
 fn test_list_policies_with_effect_consistent_with_evaluate_on_forbid_deny() {
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_FORBID).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("edit", None),
-        resource: Resource::new("Photo", "VacationPhoto94.jpg"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("edit", None).unwrap(),
+        resource: Resource::new("Photo", "VacationPhoto94.jpg").unwrap(),
     };
 
     let decision = engine.evaluate(&request).unwrap();
-    assert!(matches!(decision, Deny { .. }));
+    assert!(!decision.is_allowed());
 
     let default_permit = engine.list_policies(&request).unwrap();
     let any = engine
@@ -489,7 +483,7 @@ forbid (
 );
 "#;
     let engine = PolicyEngine::new_from_str(policy).unwrap();
-    let resource = Resource::new("Photo", "photo.jpg");
+    let resource = Resource::new("Photo", "photo.jpg").unwrap();
 
     let default_permit = engine
         .list_policies_for_group_with_resource("admins", &[], Some(&resource))
@@ -541,9 +535,9 @@ permit (
 "#;
     let engine = PolicyEngine::new_from_str(policy).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("view", None),
-        resource: Resource::new("Photo", "p"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("view", None).unwrap(),
+        resource: Resource::new("Photo", "p").unwrap(),
     };
 
     let listed = engine.list_policies(&request).unwrap();
@@ -567,16 +561,19 @@ permit (
 "#;
     let engine = PolicyEngine::new_from_str(policy).unwrap();
     let request = Request {
-        principal: Principal::User(User::new(
-            "alice",
-            Some(vec!["admins".into()]),
-            Some(vec!["A".into(), "B".into(), "C".into()]),
-        )),
-        action: Action::new("view", Some(vec!["A".into(), "B".into(), "C".into()])),
-        resource: Resource::new("A::B::C::Photo", "holiday-1"),
+        principal: Principal::User(
+            User::new(
+                "alice",
+                Some(vec!["admins".into()]),
+                Some(vec!["A".into(), "B".into(), "C".into()]),
+            )
+            .unwrap(),
+        ),
+        action: Action::new("view", Some(vec!["A".into(), "B".into(), "C".into()])).unwrap(),
+        resource: Resource::new("A::B::C::Photo", "holiday-1").unwrap(),
     };
 
-    assert!(matches!(engine.evaluate(&request).unwrap(), Allow { .. }));
+    assert!(engine.evaluate(&request).unwrap().is_allowed());
     let listed = engine.list_policies(&request).unwrap();
     assert_eq!(listed.policies().len(), 1);
 }
@@ -593,9 +590,9 @@ permit (principal == User::"alice", action == Action::"read", resource == Photo:
 "#;
     let engine = PolicyEngine::new_from_str(policy).unwrap();
     let request = Request {
-        principal: Principal::User(User::new("alice", None, None)),
-        action: Action::new("read", None),
-        resource: Resource::new("Photo", "p"),
+        principal: Principal::User(User::new("alice", None, None).unwrap()),
+        action: Action::new("read", None).unwrap(),
+        resource: Resource::new("Photo", "p").unwrap(),
     };
 
     let first = engine.list_policies(&request).unwrap();

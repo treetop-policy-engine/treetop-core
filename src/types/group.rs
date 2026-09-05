@@ -22,10 +22,13 @@ pub struct Group {
 
 impl Group {
     /// Create a new group with an optional namespace.
-    pub fn new<S: AsRef<str>>(name: S, namespace: Option<Vec<String>>) -> Self {
-        Group {
-            id: GroupId::new(name.as_ref(), namespace),
-        }
+    pub fn new<S: AsRef<str>>(
+        name: S,
+        namespace: Option<Vec<String>>,
+    ) -> Result<Self, PolicyError> {
+        Ok(Group {
+            id: GroupId::new(name.as_ref(), namespace)?,
+        })
     }
 
     /// Get the group ID.
@@ -36,7 +39,7 @@ impl Group {
 
 impl Display for Group {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}", self.id.fmt_qualified(Self::cedar_type()))
+        write!(f, "{}", self.id.fmt_qualified())
     }
 }
 
@@ -45,12 +48,13 @@ impl CedarAtom for Group {
         CedarType::Group.as_ref()
     }
 
+    #[cfg(test)]
     fn cedar_id(&self) -> String {
-        self.id.fmt_qualified(Self::cedar_type())
+        self.id.fmt_qualified()
     }
 
-    fn cedar_entity_uid(&self) -> Result<cedar_policy::EntityUid, PolicyError> {
-        self.id.cedar_entity_uid(Self::cedar_type())
+    fn cedar_entity_uid(&self) -> &cedar_policy::EntityUid {
+        self.id.cedar_entity_uid()
     }
 }
 
@@ -70,7 +74,7 @@ impl FromStr for Group {
             _ => {}
         }
 
-        Ok(Group::new(parts.id, parts.namespace))
+        Group::new(parts.id, parts.namespace)
     }
 }
 
@@ -80,7 +84,7 @@ pub struct Groups(Vec<Group>);
 
 impl Groups {
     /// Construct a `Groups` list from names, with an optional shared namespace.
-    pub fn new<I, S>(groups: I, namespace: Option<Vec<String>>) -> Self
+    pub fn new<I, S>(groups: I, namespace: Option<Vec<String>>) -> Result<Self, PolicyError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -88,8 +92,8 @@ impl Groups {
         let v = groups
             .into_iter()
             .map(|g| Group::new(g.as_ref(), namespace.clone()))
-            .collect();
-        Groups(v)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Groups(v))
     }
 
     /// Check if the Groups collection is empty.
@@ -193,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_groups_display_multiple() {
-        let groups = Groups::new(vec!["admins", "users"], None);
+        let groups = Groups::new(vec!["admins", "users"], None).unwrap();
         let display = format!("{}", groups);
         // Order might vary due to iterator, but both should be present
         assert!(display.contains("admins"));
@@ -202,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_groups_iterator() {
-        let groups = Groups::new(vec!["admins", "users", "developers"], None);
+        let groups = Groups::new(vec!["admins", "users", "developers"], None).unwrap();
         let mut count = 0;
         for group in groups {
             count += 1;
@@ -217,20 +221,20 @@ mod tests {
 
     #[test]
     fn test_groups_len() {
-        let groups = Groups::new(vec!["a", "b", "c"], None);
+        let groups = Groups::new(vec!["a", "b", "c"], None).unwrap();
         assert_eq!(groups.len(), 3);
     }
 
     #[test]
     fn test_groups_clone() {
-        let groups = Groups::new(vec!["admins"], None);
+        let groups = Groups::new(vec!["admins"], None).unwrap();
         let cloned = groups.clone();
         assert_eq!(groups.len(), cloned.len());
     }
 
     #[test]
     fn test_groups_with_namespace() {
-        let groups = Groups::new(vec!["admins"], Some(vec!["App".to_string()]));
+        let groups = Groups::new(vec!["admins"], Some(vec!["App".to_string()])).unwrap();
         assert_eq!(groups.len(), 1);
         let display = format!("{}", groups);
         assert!(display.contains("admins"));
@@ -238,13 +242,13 @@ mod tests {
 
     #[test]
     fn test_group_id_accessor() {
-        let group = Group::new("admins", None);
+        let group = Group::new("admins", None).unwrap();
         assert_eq!(group.id().id(), "admins");
     }
 
     #[test]
     fn test_group_serialization() {
-        let group = Group::new("admins", Some(vec!["App".to_string()]));
+        let group = Group::new("admins", Some(vec!["App".to_string()])).unwrap();
         let serialized = serde_json::to_value(&group).unwrap();
         let deserialized: Group = serde_json::from_value(serialized).unwrap();
         assert_eq!(group.id().id(), deserialized.id().id());
@@ -252,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_groups_serialization() {
-        let groups = Groups::new(vec!["admins", "users"], None);
+        let groups = Groups::new(vec!["admins", "users"], None).unwrap();
         let serialized = serde_json::to_value(&groups).unwrap();
         let deserialized: Groups = serde_json::from_value(serialized).unwrap();
         assert_eq!(groups.len(), deserialized.len());

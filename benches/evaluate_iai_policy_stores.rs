@@ -18,7 +18,7 @@ fn evaluate_selected_policy_store() -> usize {
             .scoped
             .evaluate(black_box(&SCENARIO.request))
             .expect("benchmark request must be valid");
-        allowed += usize::from(matches!(decision, treetop_core::Decision::Allow { .. }));
+        allowed += usize::from(decision.is_allowed());
     }
     black_box(allowed)
 }
@@ -31,7 +31,7 @@ fn evaluate_monolithic_policy_set() -> usize {
             .monolithic
             .evaluate(black_box(&SCENARIO.request))
             .expect("benchmark request must be valid");
-        allowed += usize::from(matches!(decision, treetop_core::Decision::Allow { .. }));
+        allowed += usize::from(decision.is_allowed());
     }
     black_box(allowed)
 }

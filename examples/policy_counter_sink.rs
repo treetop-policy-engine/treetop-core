@@ -152,14 +152,14 @@ fn main() {
         println!("Test: {}", description);
 
         let request = Request {
-            principal: Principal::User(User::new(user, None, None)),
-            action: Action::new(action, None),
-            resource: Resource::new("Document", resource),
+            principal: Principal::User(User::new(user, None, None).unwrap()),
+            action: Action::new(action, None).unwrap(),
+            resource: Resource::new("Document", resource).unwrap(),
         };
 
         match engine.evaluate(&request) {
             Ok(decision) => {
-                let verdict = if matches!(decision, treetop_core::Decision::Allow { .. }) {
+                let verdict = if decision.is_allowed() {
                     "ALLOWED"
                 } else {
                     "DENIED"

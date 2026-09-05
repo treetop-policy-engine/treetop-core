@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use utoipa::ToSchema;
+use utoipa::openapi::{RefOr, schema::Schema};
+use utoipa::{PartialSchema, ToSchema};
 
 use crate::error::PolicyError;
+use crate::labels::LabelSetVersion;
 
 /// A permit policy that permitted a specific action on a resource.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, ToSchema)]
@@ -159,7 +161,7 @@ impl FromIterator<PermitPolicy> for PermitPolicies {
     }
 }
 
-/// Version metadata for the policy set used during an evaluation.
+/// Version metadata for the complete engine state used during an evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, ToSchema)]
 pub struct PolicyVersion {
     /// Hash of the policy source (e.g. SHA-256 of the policy text).
@@ -168,22 +170,109 @@ pub struct PolicyVersion {
     /// When this policy set was loaded into the engine.
     #[schema(value_type = String)]
     pub loaded_at: Arc<str>,
+    /// Application-defined label-set version, when the installed registry has one.
+    #[serde(default)]
+    pub label_set: Option<LabelSetVersion>,
+    /// Monotonic generation within this engine instance.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 impl Display for PolicyVersion {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{} @ {}", self.hash, self.loaded_at)
+        write!(
+            f,
+            "{} @ {} (generation {})",
+            self.hash, self.loaded_at, self.generation
+        )
     }
 }
 
-/// Allow or deny decision, including the policy version used.
+/// Allow or deny decision produced by a trusted engine evaluation.
 ///
-/// This is a data-transfer type with public variants and `Deserialize`; it is
-/// therefore freely constructible. Only a value returned directly by a trusted
-/// [`crate::PolicyEngine::evaluate`] call is authorization evidence. Never
-/// grant access based on a client-supplied or deserialized `Decision`.
+/// This type intentionally does not implement `Deserialize`. Use
+/// [`DecisionDto`] for untrusted or persisted wire data; a DTO is never
+/// authorization evidence.
+///
+/// Its private representation can only be constructed by the evaluator:
+///
+/// ```compile_fail
+/// use treetop_core::{Decision, DecisionDto};
+///
+/// fn forge(dto: DecisionDto) -> Decision {
+///     Decision(dto)
+/// }
+/// ```
+///
+/// Callers cannot replace issued evidence by matching mutable variant fields:
+///
+/// ```compile_fail
+/// use treetop_core::{Decision, PermitPolicies};
+///
+/// fn forge(decision: &mut Decision) {
+///     if let Decision::Allow { policies, version, .. } = decision {
+///         *policies = PermitPolicies::empty();
+///         version.generation = u64::MAX;
+///     }
+/// }
+/// ```
+///
+/// Read-only accessors protect permit evidence and versions, even when the
+/// caller holds a mutable decision:
+///
+/// ```compile_fail
+/// use treetop_core::{Decision, PermitPolicies};
+///
+/// fn erase_evidence(decision: &mut Decision) {
+///     *decision.permit_policies().unwrap() = PermitPolicies::empty();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use treetop_core::Decision;
+///
+/// fn change_generation(decision: &mut Decision) {
+///     decision.version().generation = u64::MAX;
+/// }
+/// ```
+///
+/// Serialized data cannot be promoted back into trusted evidence:
+///
+/// ```compile_fail
+/// use treetop_core::Decision;
+///
+/// let forged: Decision = serde_json::from_str(r#"{"Deny":{"version":{
+///     "hash":"forged","loaded_at":"arbitrary","generation":1
+/// }}}"#).unwrap();
+/// ```
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct Decision(DecisionDto);
+
+// Delegate the wire schema explicitly: deriving it on the wrapper adds a
+// nesting level even though Serde serializes it transparently.
+impl PartialSchema for Decision {
+    fn schema() -> RefOr<Schema> {
+        let mut schema = DecisionDto::schema();
+        if let RefOr::T(Schema::OneOf(schema)) = &mut schema {
+            schema.description =
+                Some("Allow or deny decision produced by a trusted engine evaluation.".into());
+        }
+        schema
+    }
+}
+
+impl ToSchema for Decision {
+    fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
+        DecisionDto::schemas(schemas);
+    }
+}
+
+/// Serializable and deserializable decision-shaped data without authority.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, ToSchema)]
-pub enum Decision {
+#[non_exhaustive]
+pub enum DecisionDto {
     Allow {
         policies: PermitPolicies,
         version: PolicyVersion,
@@ -194,20 +283,72 @@ pub enum Decision {
 }
 
 /// Authorization decision plus deny-side forbid diagnostics.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash, ToSchema)]
 pub struct DecisionDiagnostics {
-    pub decision: Decision,
+    decision: Decision,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub matched_forbid_policy_ids: Vec<String>,
+    matched_forbid_policy_ids: Vec<String>,
+}
+
+impl Decision {
+    /// Whether this trusted decision allows the request.
+    pub fn is_allowed(&self) -> bool {
+        matches!(self.0, DecisionDto::Allow { .. })
+    }
+
+    /// Complete engine-state version used for evaluation.
+    pub fn version(&self) -> &PolicyVersion {
+        match &self.0 {
+            DecisionDto::Allow { version, .. } | DecisionDto::Deny { version } => version,
+        }
+    }
+
+    /// Permit policies for an allow decision.
+    pub fn permit_policies(&self) -> Option<&PermitPolicies> {
+        match &self.0 {
+            DecisionDto::Allow { policies, .. } => Some(policies),
+            DecisionDto::Deny { .. } => None,
+        }
+    }
+}
+
+impl DecisionDiagnostics {
+    pub(crate) fn new(decision: Decision, matched_forbid_policy_ids: Vec<String>) -> Self {
+        Self {
+            decision,
+            matched_forbid_policy_ids,
+        }
+    }
+
+    /// Borrow the trusted authorization decision.
+    pub fn decision(&self) -> &Decision {
+        &self.decision
+    }
+
+    /// Consume diagnostics and return the trusted authorization decision.
+    pub fn into_decision(self) -> Decision {
+        self.decision
+    }
+
+    /// Borrow matching forbid policy IDs disclosed for this denial.
+    pub fn matched_forbid_policy_ids(&self) -> &[String] {
+        &self.matched_forbid_policy_ids
+    }
+}
+
+impl From<&Decision> for DecisionDto {
+    fn from(decision: &Decision) -> Self {
+        decision.0.clone()
+    }
 }
 
 impl Display for Decision {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Decision::Allow { policies, version } => {
+        match &self.0 {
+            DecisionDto::Allow { policies, version } => {
                 write!(f, "Allow(hash={}; [{}])", version.hash, policies)
             }
-            Decision::Deny { version } => write!(f, "Deny(hash={})", version.hash),
+            DecisionDto::Deny { version } => write!(f, "Deny(hash={})", version.hash),
         }
     }
 }
@@ -216,32 +357,22 @@ impl Display for Decision {
 ///
 /// The conversion fails closed if Cedar reports `Allow` but no matching permit
 /// policy metadata is available.
-pub trait FromDecisionWithPolicy {
-    fn from_decision_with_policy(
+impl Decision {
+    pub(crate) fn from_cedar(
         response: cedar_policy::Decision,
         policies: PermitPolicies,
         version: PolicyVersion,
-    ) -> Result<Self, PolicyError>
-    where
-        Self: Sized;
-}
-
-impl FromDecisionWithPolicy for Decision {
-    fn from_decision_with_policy(
-        decision: cedar_policy::Decision,
-        policies: PermitPolicies,
-        version: PolicyVersion,
     ) -> Result<Self, PolicyError> {
-        match decision {
+        match response {
             cedar_policy::Decision::Allow => {
                 if policies.is_empty() {
                     return Err(PolicyError::EvalError(
                         "Cedar returned Allow without a matching permit policy".to_string(),
                     ));
                 }
-                Ok(Decision::Allow { policies, version })
+                Ok(Self(DecisionDto::Allow { policies, version }))
             }
-            cedar_policy::Decision::Deny => Ok(Decision::Deny { version }),
+            cedar_policy::Decision::Deny => Ok(Self(DecisionDto::Deny { version })),
         }
     }
 }
@@ -250,302 +381,124 @@ impl FromDecisionWithPolicy for Decision {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_decision_display_allow() {
-        let policy = PermitPolicy::new(
-            "permit(principal, action, resource);".to_string(),
-            serde_json::json!({"effect": "permit"}),
-            "policy0".to_string(),
-        );
-        let version = PolicyVersion {
+    fn version() -> PolicyVersion {
+        PolicyVersion {
             hash: "abc123".into(),
             loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-        let decision = Decision::Allow {
-            policies: vec![policy.clone()].into(),
-            version: version.clone(),
-        };
-        let display = format!("{}", decision);
-        assert!(display.contains("Allow"));
-        assert!(display.contains("abc123"));
-        assert!(display.contains("permit(principal, action, resource);"));
-    }
-
-    #[test]
-    fn test_decision_display_deny() {
-        let version = PolicyVersion {
-            hash: "def456".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-        let decision = Decision::Deny { version };
-        let display = format!("{}", decision);
-        assert!(display.contains("Deny"));
-        assert!(display.contains("def456"));
-    }
-
-    #[test]
-    fn test_policy_version_display() {
-        let version = PolicyVersion {
-            hash: "abc123".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-        let display = format!("{}", version);
-        assert!(display.contains("abc123"));
-        assert!(display.contains("2023-01-01T00:00:00Z"));
-    }
-
-    #[test]
-    fn test_from_decision_with_policy_allow() {
-        let policy = PermitPolicy::new(
-            "permit(principal, action, resource);".to_string(),
-            serde_json::json!({"effect": "permit"}),
-            "policy0".to_string(),
-        );
-        let version = PolicyVersion {
-            hash: "test123".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-
-        let decision = Decision::from_decision_with_policy(
-            cedar_policy::Decision::Allow,
-            vec![policy.clone()].into(),
-            version.clone(),
-        )
-        .unwrap();
-
-        match decision {
-            Decision::Allow {
-                policies,
-                version: v,
-            } => {
-                assert_eq!(policies.len(), 1);
-                let first_policy = policies.as_slice()[0].clone();
-                assert_eq!(first_policy.literal, policy.literal);
-                assert_eq!(first_policy.cedar_id.as_ref(), "policy0");
-                assert_eq!(v.hash, version.hash);
-            }
-            _ => panic!("Expected Allow decision"),
+            label_set: None,
+            generation: 7,
         }
     }
 
-    #[test]
-    fn test_from_decision_with_policy_deny() {
-        let version = PolicyVersion {
-            hash: "test123".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
+    fn policy() -> PermitPolicy {
+        PermitPolicy::new(
+            "@id(\"allow_read\")\npermit(principal, action, resource);".to_string(),
+            serde_json::json!({"effect": "permit"}),
+            "policy0".to_string(),
+        )
+    }
 
-        let decision = Decision::from_decision_with_policy(
+    #[test]
+    fn trusted_allow_exposes_evidence_and_metadata() {
+        let decision = Decision::from_cedar(
+            cedar_policy::Decision::Allow,
+            vec![policy()].into(),
+            version(),
+        )
+        .unwrap();
+
+        assert!(decision.is_allowed());
+        assert_eq!(decision.version().generation, 7);
+        assert_eq!(decision.permit_policies().unwrap().ids(), ["allow_read"]);
+        assert!(decision.to_string().contains("Allow"));
+    }
+
+    #[test]
+    fn allow_without_permit_metadata_fails_closed() {
+        let result = Decision::from_cedar(
+            cedar_policy::Decision::Allow,
+            PermitPolicies::empty(),
+            version(),
+        );
+        assert!(matches!(result, Err(PolicyError::EvalError(_))));
+    }
+
+    #[test]
+    fn trusted_deny_has_no_permit_policies() {
+        let decision = Decision::from_cedar(
             cedar_policy::Decision::Deny,
             PermitPolicies::empty(),
-            version.clone(),
+            version(),
         )
         .unwrap();
 
-        match decision {
-            Decision::Deny { version: v } => {
-                assert_eq!(v.hash, version.hash);
-            }
-            _ => panic!("Expected Deny decision"),
-        }
+        assert!(!decision.is_allowed());
+        assert!(decision.permit_policies().is_none());
+        assert!(decision.to_string().contains("Deny"));
     }
 
     #[test]
-    fn test_permit_policy_construction() {
-        let policy = PermitPolicy::new(
-            "permit(principal, action, resource);".to_string(),
-            serde_json::json!({"effect": "permit"}),
-            "policy0".to_string(),
-        );
-        assert_eq!(
-            policy.literal.as_ref(),
-            "permit(principal, action, resource);"
-        );
-        assert_eq!(policy.cedar_id.as_ref(), "policy0");
-    }
-
-    #[test]
-    fn test_permit_policy_extracts_literal_annotation_fallback() {
-        let policy = PermitPolicy::new(
-            "@id(\"allow_read\")\npermit(principal, action, resource);".to_string(),
-            serde_json::json!({}),
-            "policy0".to_string(),
-        );
-
-        assert_eq!(policy.id(), "allow_read");
-    }
-
-    #[test]
-    fn test_decision_serialization() {
-        let policy = PermitPolicy::new(
-            "permit(principal, action, resource);".to_string(),
-            serde_json::json!({"effect": "permit"}),
-            "policy0".to_string(),
-        );
-        let version = PolicyVersion {
-            hash: "abc123".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-
-        let decision = Decision::Allow {
-            policies: vec![policy].into(),
-            version,
-        };
+    fn trusted_decision_serializes_to_untrusted_dto_shape() {
+        let decision = Decision::from_cedar(
+            cedar_policy::Decision::Allow,
+            vec![policy()].into(),
+            version(),
+        )
+        .unwrap();
         let serialized = serde_json::to_value(&decision).unwrap();
+        let dto: DecisionDto = serde_json::from_value(serialized.clone()).unwrap();
 
-        // Verify that policy metadata is included in serialization
-        // PermitPolicies is transparent, so it serializes as a flat array
-        let allow_obj = serialized.get("Allow");
-        assert!(allow_obj.is_some());
-        let policies_arr = allow_obj.and_then(|a| a.get("policies"));
-        assert!(policies_arr.is_some());
-        assert!(policies_arr.unwrap().is_array());
-
-        let deserialized: Decision = serde_json::from_value(serialized).unwrap();
-
-        match deserialized {
-            Decision::Allow {
-                version: v,
-                policies,
-            } => {
-                assert_eq!(v.hash.as_ref(), "abc123");
-                assert_eq!(policies.len(), 1);
-                let first_policy = policies.as_slice()[0].clone();
-                assert_eq!(first_policy.cedar_id.as_ref(), "policy0");
-            }
-            _ => panic!("Expected Allow decision"),
-        }
+        assert!(serialized["Allow"]["policies"].is_array());
+        assert!(matches!(dto, DecisionDto::Allow { .. }));
+        assert_eq!(DecisionDto::from(&decision), dto);
     }
 
     #[test]
-    fn test_policy_version_serialization() {
-        let version = PolicyVersion {
-            hash: "abc123".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-
+    fn policy_version_round_trips() {
+        let version = version();
         let serialized = serde_json::to_value(&version).unwrap();
         let deserialized: PolicyVersion = serde_json::from_value(serialized).unwrap();
-
-        assert_eq!(version.hash, deserialized.hash);
-        assert_eq!(version.loaded_at, deserialized.loaded_at);
+        assert_eq!(version, deserialized);
+        assert!(version.to_string().contains("generation 7"));
     }
 
     #[test]
-    fn test_permit_policy_clone() {
-        let policy = PermitPolicy::new(
-            "test".to_string(),
-            serde_json::json!({"test": "value"}),
-            "policy1".to_string(),
-        );
-        let cloned = policy.clone();
-        assert_eq!(policy.literal, cloned.literal);
-        assert_eq!(policy.cedar_id, cloned.cedar_id);
-        assert_eq!(policy.cedar_id.as_ref(), "policy1");
+    fn permit_policy_uses_annotation_id() {
+        assert_eq!(policy().id(), "allow_read");
     }
 
     #[test]
-    fn test_decision_clone() {
-        let version = PolicyVersion {
-            hash: "abc123".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-        let decision = Decision::Deny { version };
-        let cloned = decision.clone();
-
-        match cloned {
-            Decision::Deny { version: v } => {
-                assert_eq!(v.hash.as_ref(), "abc123");
-            }
-            _ => panic!("Expected Deny decision"),
-        }
-    }
-
-    #[test]
-    fn test_permit_policies_display() {
-        let policy1 = PermitPolicy::new(
-            "permit(principal, action, resource == File::\"z.txt\");".to_string(),
-            serde_json::json!({"effect": "permit"}),
-            "policy_z".to_string(),
-        );
-        let policy2 = PermitPolicy::new(
-            "permit(principal, action, resource == File::\"a.txt\");".to_string(),
-            serde_json::json!({"effect": "permit"}),
-            "policy_a".to_string(),
-        );
-
-        // Add policies in reverse alphabetical order
-        let policies = PermitPolicies::new(vec![policy1, policy2]);
-
-        // Display should sort them alphabetically
-        let display = format!("{}", policies);
-        assert!(display.starts_with("permit(principal, action, resource == File::\"a.txt\");"));
-        assert!(display.contains("; "));
-        assert!(display.ends_with("permit(principal, action, resource == File::\"z.txt\");"));
-    }
-
-    #[test]
-    fn test_permit_policies_ids() {
-        let policy1 = PermitPolicy::new(
-            "test1".to_string(),
+    fn permit_policies_are_iterable_and_display_deterministically() {
+        let first = PermitPolicy::new(
+            "permit(principal, action, resource == File::\"z\");".to_string(),
             serde_json::json!({}),
-            "policy_z".to_string(),
+            "z".to_string(),
         );
-        let policy2 = PermitPolicy::new(
-            "test2".to_string(),
+        let second = PermitPolicy::new(
+            "permit(principal, action, resource == File::\"a\");".to_string(),
             serde_json::json!({}),
-            "policy_a".to_string(),
+            "a".to_string(),
         );
+        let policies = PermitPolicies::new(vec![first, second]);
 
-        // Add policies in reverse alphabetical order
-        let policies = PermitPolicies::new(vec![policy1, policy2]);
-
-        // ids() should return sorted IDs
-        let ids = policies.ids();
-        assert_eq!(ids, vec!["policy_a", "policy_z"]);
+        assert_eq!(policies.len(), 2);
+        assert_eq!(policies.ids(), ["a", "z"]);
+        assert!(policies.to_string().contains("; "));
+        assert_eq!((&policies).into_iter().count(), 2);
     }
 
     #[test]
-    fn test_permit_policies_iteration() {
-        let policy1 = PermitPolicy::new(
-            "test1".to_string(),
-            serde_json::json!({}),
-            "policy1".to_string(),
-        );
-        let policy2 = PermitPolicy::new(
-            "test2".to_string(),
-            serde_json::json!({}),
-            "policy2".to_string(),
-        );
+    fn diagnostics_disclose_forbids_without_changing_decision() {
+        let decision = Decision::from_cedar(
+            cedar_policy::Decision::Deny,
+            PermitPolicies::empty(),
+            version(),
+        )
+        .unwrap();
+        let diagnostics = DecisionDiagnostics::new(decision, vec!["deny_delete".to_string()]);
 
-        let policies = PermitPolicies::new(vec![policy1.clone(), policy2.clone()]);
-
-        // Test reference iteration
-        let mut count = 0;
-        for policy in &policies {
-            count += 1;
-            assert!(matches!(policy.cedar_id.as_ref(), "policy1" | "policy2"));
-        }
-        assert_eq!(count, 2);
-
-        // Test consuming iteration
-        let collected: Vec<_> = policies.into_iter().collect();
-        assert_eq!(collected.len(), 2);
-        assert_eq!(collected[0].cedar_id, policy1.cedar_id);
-        assert_eq!(collected[1].cedar_id, policy2.cedar_id);
-    }
-
-    #[test]
-    fn test_decision_diagnostics_serialization() {
-        let version = PolicyVersion {
-            hash: "abc123".into(),
-            loaded_at: "2023-01-01T00:00:00Z".into(),
-        };
-        let diagnostics = DecisionDiagnostics {
-            decision: Decision::Deny { version },
-            matched_forbid_policy_ids: vec!["deny_delete".to_string()],
-        };
-
+        assert!(!diagnostics.decision().is_allowed());
+        assert_eq!(diagnostics.matched_forbid_policy_ids(), ["deny_delete"]);
         let serialized = serde_json::to_value(&diagnostics).unwrap();
         assert_eq!(serialized["matched_forbid_policy_ids"][0], "deny_delete");
     }

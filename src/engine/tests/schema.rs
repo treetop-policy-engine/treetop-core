@@ -55,6 +55,7 @@ fn test_schema_validates_entity_attribute_types() {
         "alice",
         "read",
         Resource::new("Document", "doc1")
+            .unwrap()
             .with_attr("sensitivity", AttrValue::String("high".into())),
     );
 
@@ -158,7 +159,7 @@ fn test_reload_with_schema_object_changes_enforcement() {
 
 #[test]
 fn test_reload_with_schema_text_rejects_invalid_schema() {
-    let engine = engine_from_policy(TEST_SCHEMA_POLICY);
+    let engine = schema_engine_from_policy(TEST_SCHEMA_POLICY, TEST_SCHEMA);
     let result = engine
         .reload_from_str_with_cedarschema(TEST_SCHEMA_POLICY, "this is not valid cedar schema");
     assert!(matches!(result, Err(PolicyError::ParseError(_))));
@@ -213,27 +214,31 @@ fn test_reload_with_schema_text_failure_is_atomic() {
 }
 
 #[test]
-fn test_non_schema_engine_can_reload_with_schema() {
-    let engine = engine_from_policy(TEST_SCHEMA_POLICY_WRITE);
-    let write_without_schema = user_request("alice", "write", Resource::new("Document", "doc1"));
-
-    let decision_before = engine.evaluate(&write_without_schema).unwrap();
-    assert_allow(&decision_before);
+fn stale_normal_reload_cannot_restore_a_superseded_schema() {
+    let engine = schema_engine_from_policy(TEST_SCHEMA_POLICY, TEST_SCHEMA);
+    let stale_state = engine.current_state();
+    let stale_policy = Arc::new(
+        PolicySnapshot::from_policy_text_with_schema(
+            TEST_SCHEMA_POLICY,
+            stale_state.policy.schema.clone(),
+        )
+        .unwrap(),
+    );
 
     engine
-        .reload_from_str_with_cedarschema(TEST_SCHEMA_POLICY, TEST_SCHEMA)
+        .reload_from_str_with_schema(TEST_SCHEMA_POLICY_WRITE, TEST_SCHEMA_WRITE.parse().unwrap())
         .unwrap();
+    let current_version = engine.current_version();
 
-    let read_with_schema = user_request("alice", "read", document_with_sensitivity("doc1", 1));
-    let decision_after = engine.evaluate(&read_with_schema).unwrap();
-    assert_allow(&decision_after);
+    assert!(
+        engine
+            .install_policy_if_current(&stale_state, stale_policy)
+            .is_err()
+    );
+    assert_eq!(engine.current_version(), current_version);
 
-    let write_after = user_request("alice", "write", document_with_sensitivity("doc1", 1));
-    let result = engine.evaluate(&write_after);
-    assert!(matches!(
-        result,
-        Err(PolicyError::RequestValidationError(_))
-    ));
+    let write_request = user_request("alice", "write", document_with_sensitivity("doc1", 1));
+    assert_allow(&engine.evaluate(&write_request).unwrap());
 }
 
 #[test]
@@ -290,7 +295,7 @@ fn test_non_schema_engine_behavior_unchanged() {
 
     // This should remain valid when no schema is configured.
     let engine = engine_from_policy(policy_not_allowed_by_test_schema);
-    let request = user_request("alice", "write", Resource::new("Document", "doc1"));
+    let request = user_request("alice", "write", Resource::new("Document", "doc1").unwrap());
 
     let decision = engine.evaluate(&request).unwrap();
     assert_allow(&decision);

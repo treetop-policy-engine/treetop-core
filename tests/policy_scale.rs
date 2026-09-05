@@ -1,10 +1,10 @@
 use std::time::Instant;
 
+use treetop_core::PolicyEngine;
 use treetop_core::bench_helpers::policy_scale::{
     CORPUS_VERSION, PR_SCALE_POLICY_COUNT, ScaleCorpus, allow_request, configured_policy_count,
     forbid_request, group_request, no_match_request,
 };
-use treetop_core::{Decision, PolicyEngine};
 
 fn exercise_scale_corpus(policy_count: usize) {
     let generation_started = Instant::now();
@@ -17,27 +17,21 @@ fn exercise_scale_corpus(policy_count: usize) {
             .expect("generated scale corpus should load with strict schema validation");
     let load_elapsed = load_started.elapsed();
 
-    assert_eq!(
-        engine
-            .policies()
-            .expect("loaded policies should list")
-            .len(),
-        corpus.policy_count
-    );
+    assert_eq!(engine.policies().len(), corpus.policy_count);
 
     let read_request = allow_request();
     let read = engine
         .evaluate(&read_request)
         .expect("scale read request should evaluate");
-    assert!(matches!(read, Decision::Allow { .. }));
+    assert!(read.is_allowed());
 
     let delete_request = forbid_request();
     let delete = engine
         .evaluate_with_diagnostics(&delete_request)
         .expect("scale delete request should evaluate");
-    assert!(matches!(delete.decision, Decision::Deny { .. }));
+    assert!(!delete.decision().is_allowed());
     assert_eq!(
-        delete.matched_forbid_policy_ids,
+        delete.matched_forbid_policy_ids(),
         ["scale.target.delete_forbid"]
     );
 
@@ -45,13 +39,13 @@ fn exercise_scale_corpus(policy_count: usize) {
     let review = engine
         .evaluate(&review_request)
         .expect("scale group request should evaluate");
-    assert!(matches!(review, Decision::Allow { .. }));
+    assert!(review.is_allowed());
 
     let no_match_request = no_match_request();
     let no_match = engine
         .evaluate(&no_match_request)
         .expect("scale no-match request should evaluate");
-    assert!(matches!(no_match, Decision::Deny { .. }));
+    assert!(!no_match.is_allowed());
 
     let candidates = engine
         .list_policies(&read_request)
@@ -66,22 +60,22 @@ fn exercise_scale_corpus(policy_count: usize) {
         .expect("replacement scale corpus should reload");
     let reload_elapsed = reload_started.elapsed();
     assert_ne!(version_before_reload.hash, engine.current_version().hash);
-    assert!(matches!(
+    assert!(
         engine
             .evaluate(&read_request)
-            .expect("request should evaluate after scale reload"),
-        Decision::Allow { .. }
-    ));
+            .expect("request should evaluate after scale reload")
+            .is_allowed()
+    );
 
     let version_before_failure = engine.current_version();
     assert!(engine.reload_from_str("permit (").is_err());
     assert_eq!(version_before_failure.hash, engine.current_version().hash);
-    assert!(matches!(
+    assert!(
         engine
             .evaluate(&read_request)
-            .expect("failed scale reload should preserve the active snapshot"),
-        Decision::Allow { .. }
-    ));
+            .expect("failed scale reload should preserve the active snapshot")
+            .is_allowed()
+    );
 
     eprintln!(
         "policy scale: corpus_version={CORPUS_VERSION}, count={policy_count}, bytes={}, generate={generation_elapsed:?}, load={load_elapsed:?}, reload={reload_elapsed:?}",
@@ -102,7 +96,7 @@ fn generated_corpus_is_deterministic_and_has_exact_policy_count() {
     let engine =
         PolicyEngine::new_from_str_with_cedarschema(&first.policy_text, &first.schema_text)
             .expect("small generated corpus should load");
-    assert_eq!(engine.policies().unwrap().len(), first.policy_count);
+    assert_eq!(engine.policies().len(), first.policy_count);
 }
 
 #[test]
@@ -112,26 +106,17 @@ fn shared_request_cases_keep_their_authorization_outcomes() {
         PolicyEngine::new_from_str_with_cedarschema(&corpus.policy_text, &corpus.schema_text)
             .expect("shared fixture should load");
 
-    assert!(matches!(
-        engine.evaluate(&allow_request()).unwrap(),
-        Decision::Allow { .. }
-    ));
+    assert!(engine.evaluate(&allow_request()).unwrap().is_allowed());
 
     let forbid = engine.evaluate_with_diagnostics(&forbid_request()).unwrap();
-    assert!(matches!(forbid.decision, Decision::Deny { .. }));
+    assert!(!forbid.decision().is_allowed());
     assert_eq!(
-        forbid.matched_forbid_policy_ids,
+        forbid.matched_forbid_policy_ids(),
         ["scale.target.delete_forbid"]
     );
 
-    assert!(matches!(
-        engine.evaluate(&group_request()).unwrap(),
-        Decision::Allow { .. }
-    ));
-    assert!(matches!(
-        engine.evaluate(&no_match_request()).unwrap(),
-        Decision::Deny { .. }
-    ));
+    assert!(engine.evaluate(&group_request()).unwrap().is_allowed());
+    assert!(!engine.evaluate(&no_match_request()).unwrap().is_allowed());
 }
 
 #[test]

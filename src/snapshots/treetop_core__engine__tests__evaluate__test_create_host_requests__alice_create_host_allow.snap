@@ -1,5 +1,5 @@
 ---
-source: src/engine.rs
+source: src/engine/tests/evaluate.rs
 expression: decision
 ---
 {
@@ -86,7 +86,9 @@ expression: decision
     ],
     "version": {
       "hash": "fb81c2dc092d8f992659f666106894bb0cde22932f2ee2a819b4d8cbc81bfc94",
-      "loaded_at": "[timestamp]"
+      "loaded_at": "[timestamp]",
+      "label_set": null,
+      "generation": 1
     }
   }
 }

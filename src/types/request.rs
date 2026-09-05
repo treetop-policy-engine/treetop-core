@@ -25,9 +25,9 @@ mod tests {
     #[test]
     fn assert_request_serialization() {
         let request = Request {
-            principal: Principal::User(User::new("alice", None, None)),
-            action: Action::new("create", None),
-            resource: Resource::new("Host", "web-01"),
+            principal: Principal::User(User::new("alice", None, None).unwrap()),
+            action: Action::new("create", None).unwrap(),
+            resource: Resource::new("Host", "web-01").unwrap(),
         };
         let serialized = serde_json::to_value(&request).unwrap();
 
@@ -39,9 +39,9 @@ mod tests {
     #[test]
     fn test_request_with_group_principal() {
         let request = Request {
-            principal: Principal::Group(Group::new("admins", None)),
-            action: Action::new("delete", None),
-            resource: Resource::new("Database", "prod"),
+            principal: Principal::Group(Group::new("admins", None).unwrap()),
+            action: Action::new("delete", None).unwrap(),
+            resource: Resource::new("Database", "prod").unwrap(),
         };
 
         let serialized = serde_json::to_value(&request).unwrap();
@@ -51,9 +51,11 @@ mod tests {
     #[test]
     fn test_request_with_namespaced_types() {
         let request = Request {
-            principal: Principal::User(User::new("alice", None, Some(vec!["App".to_string()]))),
-            action: Action::new("create", Some(vec!["Admin".to_string()])),
-            resource: Resource::new("Host", "web-01"),
+            principal: Principal::User(
+                User::new("alice", None, Some(vec!["App".to_string()])).unwrap(),
+            ),
+            action: Action::new("create", Some(vec!["Admin".to_string()])).unwrap(),
+            resource: Resource::new("Host", "web-01").unwrap(),
         };
 
         let serialized = serde_json::to_value(&request).unwrap();
@@ -68,9 +70,10 @@ mod tests {
     fn test_request_with_resource_attributes() {
         use crate::types::AttrValue;
         let request = Request {
-            principal: Principal::User(User::new("alice", None, None)),
-            action: Action::new("read", None),
+            principal: Principal::User(User::new("alice", None, None).unwrap()),
+            action: Action::new("read", None).unwrap(),
             resource: Resource::new("Document", "doc1")
+                .unwrap()
                 .with_attr("owner", AttrValue::String("alice".to_string()))
                 .with_attr("public", AttrValue::Bool(false)),
         };
@@ -81,9 +84,9 @@ mod tests {
     #[test]
     fn test_request_clone() {
         let request = Request {
-            principal: Principal::User(User::new("alice", None, None)),
-            action: Action::new("read", None),
-            resource: Resource::new("File", "file1"),
+            principal: Principal::User(User::new("alice", None, None).unwrap()),
+            action: Action::new("read", None).unwrap(),
+            resource: Resource::new("File", "file1").unwrap(),
         };
 
         let cloned = request.clone();
@@ -95,9 +98,9 @@ mod tests {
     #[test]
     fn test_request_debug() {
         let request = Request {
-            principal: Principal::User(User::new("alice", None, None)),
-            action: Action::new("read", None),
-            resource: Resource::new("File", "file1"),
+            principal: Principal::User(User::new("alice", None, None).unwrap()),
+            action: Action::new("read", None).unwrap(),
+            resource: Resource::new("File", "file1").unwrap(),
         };
 
         let debug_str = format!("{:?}", request);

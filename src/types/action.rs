@@ -22,20 +22,23 @@ pub struct Action {
 
 impl Display for Action {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}", self.id.fmt_qualified(Self::cedar_type()))
+        write!(f, "{}", self.id.fmt_qualified())
     }
 }
 
 impl Action {
     /// Create a new action with an optional namespace.
-    pub fn new<T: Into<String>>(id: T, namespace: Option<Vec<String>>) -> Self {
-        Action {
-            id: ActionId::new(id, namespace),
-        }
+    pub fn new<T: Into<String>>(
+        id: T,
+        namespace: Option<Vec<String>>,
+    ) -> Result<Self, PolicyError> {
+        Ok(Action {
+            id: ActionId::new(id, namespace)?,
+        })
     }
 
     /// Create a new action without a namespace.
-    pub fn without_namespace<T: Into<String>>(id: T) -> Self {
+    pub fn without_namespace<T: Into<String>>(id: T) -> Result<Self, PolicyError> {
         Action::new(id, None)
     }
 
@@ -55,12 +58,13 @@ impl CedarAtom for Action {
         CedarType::Action.as_ref()
     }
 
+    #[cfg(test)]
     fn cedar_id(&self) -> String {
-        self.id.fmt_qualified(Self::cedar_type())
+        self.id.fmt_qualified()
     }
 
-    fn cedar_entity_uid(&self) -> Result<cedar_policy::EntityUid, PolicyError> {
-        self.id.cedar_entity_uid(Self::cedar_type())
+    fn cedar_entity_uid(&self) -> &cedar_policy::EntityUid {
+        self.id.cedar_entity_uid()
     }
 }
 
@@ -80,7 +84,7 @@ impl FromStr for Action {
             _ => {}
         }
 
-        Ok(Action::new(parts.id, parts.namespace))
+        Action::new(parts.id, parts.namespace)
     }
 }
 
@@ -126,7 +130,7 @@ mod tests {
         action_with_multiple_namespaces = { "test_action", Some(vec!["namespace1", "namespace2"]) },
     )]
     fn assert_action_serialization(id: &str, namespaces: Option<Vec<&str>>) {
-        let action = Action::new(id, some_str_to_string(namespaces));
+        let action = Action::new(id, some_str_to_string(namespaces)).unwrap();
         let serialized = serde_json::to_value(&action).unwrap();
         let deserialized: Action = serde_json::from_value(serialized.clone()).unwrap();
         assert_eq!(action.id, deserialized.id);
@@ -150,7 +154,8 @@ mod tests {
         let action = Action::new(
             "create-host_v2",
             Some(vec!["Infra".to_string(), "Core".to_string()]),
-        );
+        )
+        .unwrap();
 
         assert_eq!(action.id(), "create-host_v2");
         assert_eq!(action.namespace(), ["Infra", "Core"]);

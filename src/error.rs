@@ -48,6 +48,10 @@ pub enum PolicyError {
     /// A request cannot be routed to exactly one configured policy store.
     #[error("policy-store routing error: {0}")]
     PolicyStoreRoutingError(String),
+
+    /// A resource-labeling configuration violates the trusted-output contract.
+    #[error("label configuration error: {0}")]
+    LabelConfigError(String),
 }
 
 impl From<RequestValidationError> for PolicyError {
