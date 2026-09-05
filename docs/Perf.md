@@ -21,6 +21,11 @@ current expectations, and initial measurements.
 
 ## Bench Files
 
+- `bench_iai_label_registry.rs` measures one cold registry construction without
+  setup that could initialize Cedar extensions first. `label_registry_criterion.rs`
+  measures steady-state construction latency. Keep the cold probe separate from
+  evaluation fixtures so accidental validation startup work remains visible.
+
 - `benches/evaluate_common.rs` contains the shared scenario matrix and fixture
   builder.
 - `benches/evaluate_criterion_*.rs` contains the Criterion evaluation slices.

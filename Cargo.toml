@@ -58,6 +58,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serial_test = "4"
 yare = "3.0"
 
+[[bench]]
+name = "bench_iai_label_registry"
+harness = false
+
+[[bench]]
+name = "label_registry_criterion"
+harness = false
+
 [[example]]
 name = "prometheus_sink"
 required-features = ["observability"]
