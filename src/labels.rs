@@ -1,4 +1,4 @@
-use cedar_policy::{Context, EntityTypeName, RestrictedExpression};
+use cedar_policy::{EntityTypeName, RestrictedExpression};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::collections::HashSet;
@@ -202,13 +202,15 @@ fn validate_output(output: &str) -> Result<(), PolicyError> {
             "labeler output 'id' is reserved for the canonical resource ID".to_string(),
         ));
     }
-    Context::from_pairs([(output.to_string(), RestrictedExpression::new_bool(true))]).map_err(
-        |error| {
+    // Construct the same restricted record used by Context::from_pairs without
+    // evaluating it. The value is a literal, so evaluation cannot add validation;
+    // creating a Context would unnecessarily initialize all Cedar extensions.
+    RestrictedExpression::new_record([(output.to_string(), RestrictedExpression::new_bool(true))])
+        .map_err(|error| {
             PolicyError::LabelConfigError(format!(
                 "invalid Cedar attribute name '{output}': {error}"
             ))
-        },
-    )?;
+        })?;
     Ok(())
 }
 
@@ -633,6 +635,37 @@ mod tests {
         assert!(RegexLabeler::new("Host", "name", "id", Vec::new()).is_err());
         assert!(RegexLabeler::new("Host", "name", "name", Vec::new()).is_err());
         assert!(LabelRegistryBuilder::versioned("").build().is_err());
+    }
+
+    #[test]
+    fn output_validation_preserves_cedar_record_key_semantics() {
+        // Cedar record keys are strings, including keys accessed with bracket
+        // syntax. Constructing a Context must not narrow that accepted set.
+        for output in [
+            "labels",
+            "has space",
+            "hyphen-name",
+            "名前",
+            "quote\"",
+            "a\0b",
+            "id ",
+        ] {
+            assert!(
+                cedar_policy::Context::from_pairs([(
+                    output.to_string(),
+                    RestrictedExpression::new_bool(true),
+                )])
+                .is_ok()
+            );
+            assert!(validate_output(output).is_ok(), "{output:?}");
+            assert!(RegexLabeler::new("Host", "name", output, Vec::new()).is_ok());
+        }
+        for output in ["", " ", "\t\n", "id"] {
+            assert!(matches!(
+                validate_output(output),
+                Err(PolicyError::LabelConfigError(_))
+            ));
+        }
     }
 
     #[test]

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- Validate label output names with Cedar's restricted record constructor,
+  avoiding unnecessary initialization of all Cedar extensions when a labeler
+  or registry is first constructed. Empty and reserved outputs, duplicate
+  ownership, and accepted Cedar record keys retain their existing semantics.
+
 ## [0.0.24] - 2026-09-05
 
 ### Added
