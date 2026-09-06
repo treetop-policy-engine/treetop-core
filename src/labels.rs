@@ -1,12 +1,14 @@
 use cedar_policy::{EntityTypeName, RestrictedExpression};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use utoipa::{PartialSchema, ToSchema};
 
 use crate::error::PolicyError;
+use crate::traits::CedarAtom;
 use crate::types::{AttrValue, Resource};
 
 /// Stable application-defined identity for one complete labeling configuration.
@@ -55,51 +57,127 @@ impl PartialSchema for LabelSetVersion {
 
 impl ToSchema for LabelSetVersion {}
 
-/// Derives one trusted resource attribute from an immutable resource view.
+/// Exclusive ownership of one attribute on one exact Cedar resource type.
 ///
-/// The blanket [`LabelerApply`] operation owns mutation of the resource: it
-/// always replaces the declared output when derivation returns Some, or removes
-/// it when derivation returns None. Caller-provided values therefore cannot
-/// survive as trusted labels.
+/// Resource types include their complete namespace: `App::Host` and `Other::Host`
+/// are distinct scopes. Wildcards and resource entity IDs are not scopes.
+/// Construction and deserialization validate both components once.
+///
+/// ```
+/// use treetop_core::LabelTarget;
+/// let target = LabelTarget::new("App::Host", "labels")?;
+/// assert_eq!(target.resource_type(), "App::Host");
+/// # Ok::<(), treetop_core::PolicyError>(())
+/// ```
+///
+/// ```compile_fail
+/// use treetop_core::LabelTarget;
+/// let target = LabelTarget { resource_type: "*".into(), attribute: "id".into() };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LabelTarget {
+    resource_type: String,
+    attribute: String,
+    #[serde(skip)]
+    entity_type: EntityTypeName,
+}
+
+impl Hash for LabelTarget {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.entity_type.hash(state);
+        self.attribute.hash(state);
+    }
+}
+
+impl LabelTarget {
+    /// Validate an exact resource type and a nonempty, nonreserved attribute.
+    ///
+    /// Returns `LabelConfigError` for an invalid Cedar type or attribute, including
+    /// wildcards and the reserved canonical `id` attribute.
+    pub fn new(
+        resource_type: impl AsRef<str>,
+        attribute: impl Into<String>,
+    ) -> Result<Self, PolicyError> {
+        let resource_type = resource_type.as_ref();
+        let entity_type: EntityTypeName = resource_type.parse().map_err(|error| {
+            PolicyError::LabelConfigError(format!(
+                "invalid label resource type '{resource_type}': {error}"
+            ))
+        })?;
+        let attribute = attribute.into();
+        validate_output(&attribute)?;
+        Ok(Self {
+            resource_type: entity_type.to_string(),
+            attribute,
+            entity_type,
+        })
+    }
+
+    /// Canonical, fully qualified Cedar resource type.
+    pub fn resource_type(&self) -> &str {
+        &self.resource_type
+    }
+
+    /// The resource attribute owned within this type.
+    pub fn attribute(&self) -> &str {
+        &self.attribute
+    }
+
+    fn matches(&self, resource: &Resource) -> bool {
+        resource.cedar_entity_uid().type_name() == &self.entity_type
+    }
+}
+
+impl<'de> Deserialize<'de> for LabelTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireTarget {
+            resource_type: String,
+            attribute: String,
+        }
+        let wire = WireTarget::deserialize(deserializer)?;
+        Self::new(wire.resource_type, wire.attribute).map_err(D::Error::custom)
+    }
+}
+
+/// Derives one trusted attribute within one declared resource scope.
+///
+/// Implementations declare a validated target and receive an immutable resource.
+/// Core enforces the scope and owns all replacement/removal. A registry captures
+/// the target at construction; later evaluation uses that frozen declaration.
 pub trait Labeler: Send + Sync {
-    /// Returns true if this labeler applies to resources of the given kind.
-    ///
-    /// e.g. "Host", "Database::Table"; you can also support wildcard/globs if you want.
-    fn applies_to(&self, kind: &str) -> bool;
+    /// Declare the exact resource type and attribute this labeler owns.
+    fn target(&self) -> &LabelTarget;
 
-    /// Name of the single derived attribute this labeler owns.
-    fn output(&self) -> &str;
-
-    /// Derive the output from trusted resource identity or input attributes.
+    /// Derive the declared output from trusted identity or input attributes.
     ///
-    /// The controlled [`LabelerApply::apply`] operation removes this labeler's
-    /// declared output before calling `derive`, so the resource view cannot
-    /// expose a caller-provided value for that output.
-    ///
-    /// Implementations must be fast, deterministic, side-effect-free, and
-    /// must not perform blocking I/O.
+    /// Controlled application removes the owned output before calling this
+    /// method. Returning `None` leaves the output absent. Implementations must
+    /// be fast, deterministic, side-effect-free, and must not block.
     fn derive(&self, resource: &Resource) -> Option<AttrValue>;
 }
 
-/// Controlled application operation available on every labeler.
+/// Controlled, scope-enforcing application available on every labeler.
 ///
-/// This blanket implementation cannot be replaced by individual labelers:
-/// implementers only provide read-only derivation, while this method owns the
-/// replace-or-remove mutation rule.
+/// This blanket implementation cannot be replaced by individual labelers.
+/// `labeler.apply(&mut resource)` leaves other resource types untouched.
 pub trait LabelerApply: Labeler {
-    /// Apply this labeler's derived output using replace-or-remove semantics.
-    ///
-    /// Keeping application as `labeler.apply(&mut resource)` ties the operation
-    /// to the deriving type while the blanket implementation prevents custom
-    /// labelers from weakening the mutation rule.
+    /// Replace or remove the owned attribute when the exact resource type matches.
     fn apply(&self, resource: &mut Resource) {
-        let output = self.output();
-        // The declared output is untrusted input until this labeler derives it.
-        // Hide it from custom derivations so they cannot echo a forged value.
-        resource.attrs().remove(output);
-
+        let target = self.target();
+        if !target.matches(resource) {
+            return;
+        }
+        resource.attrs().remove(target.attribute());
         if let Some(value) = self.derive(resource) {
-            resource.attrs().insert(output.to_string(), value);
+            resource
+                .attrs()
+                .insert(target.attribute().to_string(), value);
         }
     }
 }
@@ -109,12 +187,9 @@ impl<T: Labeler + ?Sized> LabelerApply for T {}
 /// A labeler that uses regular expressions for matching on resource attributes.
 #[derive(Debug, Clone)]
 pub struct RegexLabeler {
-    /// The kind of resource this labeler applies to, e.g. "Host"
-    kind: String,
+    target: LabelTarget,
     /// attribute to read from, e.g. "name"
     field: String,
-    /// attribute to write to, e.g. "nameLabels"
-    output: String,
     /// Rulesets for matching resource attributes
     table: Vec<(String, Regex)>,
 }
@@ -122,58 +197,43 @@ pub struct RegexLabeler {
 impl RegexLabeler {
     /// Create a regex-based labeler.
     ///
-    /// - `kind`: resource kind this applies to (e.g., "Host")
+    /// - `target`: validated resource type and derived attribute ownership
     /// - `field`: attribute to read from (e.g., "name")
-    /// - `output`: attribute to write labels to (e.g., "nameLabels")
     /// - `table`: vector of `(label, regex)` pairs
     ///
-    /// Configure `field` and `output` as distinct attributes so repeated
+    /// Configure `field` and the target attribute as distinct attributes so repeated
     /// application remains idempotent. `field` reads the resource attribute
     /// map; it does not expose canonical entity fields. In particular, an
     /// attribute named `id` is not the canonical [`Resource::id`] value during
     /// labeling. Use a custom [`Labeler`] that reads [`Resource::id`] when
     /// labels must derive from the resource identity.
     pub fn new(
-        kind: impl Into<String>,
+        target: LabelTarget,
         field: impl Into<String>,
-        output: impl Into<String>,
         table: Vec<(String, Regex)>,
     ) -> Result<Self, PolicyError> {
-        let kind = kind.into();
         let field = field.into();
-        let output = output.into();
-        let _: EntityTypeName = kind.parse().map_err(|error| {
-            PolicyError::LabelConfigError(format!(
-                "invalid resource type '{kind}' for regex labeler: {error}"
-            ))
-        })?;
         if field.trim().is_empty() {
             return Err(PolicyError::LabelConfigError(
                 "regex labeler input field must not be empty".to_string(),
             ));
         }
-        validate_output(&output)?;
-        if field == output {
+        if field == target.attribute() {
             return Err(PolicyError::LabelConfigError(format!(
                 "regex labeler input and output must differ ('{field}')"
             )));
         }
         Ok(Self {
-            kind,
+            target,
             field,
-            output,
             table,
         })
     }
 }
 
 impl Labeler for RegexLabeler {
-    fn applies_to(&self, kind: &str) -> bool {
-        self.kind == kind
-    }
-
-    fn output(&self) -> &str {
-        &self.output
+    fn target(&self) -> &LabelTarget {
+        &self.target
     }
 
     fn derive(&self, resource: &Resource) -> Option<AttrValue> {
@@ -214,75 +274,63 @@ fn validate_output(output: &str) -> Result<(), PolicyError> {
     Ok(())
 }
 
-/// Immutable collection of trusted resource labelers.
+/// Immutable collection of labelers indexed by their declared resource type.
 ///
-/// A registry can carry an application-defined version for audit correlation
-/// across processes and restarts. Engine generations still distinguish
-/// unversioned registry replacements within one engine instance.
+/// Each `(resource type, attribute)` has one owner. Outputs on unrelated types
+/// remain application-owned inputs. Versions identify complete configurations;
+/// engine generations distinguish atomic registry replacements.
 #[derive(Clone)]
 pub struct LabelRegistry {
     version: Option<LabelSetVersion>,
-    labelers: Arc<[Arc<dyn Labeler>]>,
+    scopes: Arc<HashMap<EntityTypeName, Vec<RegisteredLabeler>>>,
+}
+
+struct RegisteredLabeler {
+    target: LabelTarget,
+    labeler: Arc<dyn Labeler>,
+}
+
+impl RegisteredLabeler {
+    fn apply(&self, resource: &mut Resource) {
+        resource.attrs().remove(self.target.attribute());
+        if let Some(value) = self.labeler.derive(resource) {
+            resource
+                .attrs()
+                .insert(self.target.attribute().to_string(), value);
+        }
+    }
 }
 
 impl LabelRegistry {
-    /// Return the application-defined identity of this complete label set.
+    /// Application-defined identity of this complete configuration.
     pub fn version(&self) -> Option<&LabelSetVersion> {
         self.version.as_ref()
     }
 
-    /// Clone and sanitize a resource when it contains a registry-owned output,
-    /// or clone and label it when at least one labeler applies.
-    ///
-    /// A resource with no registry-owned output is cloned only when a labeler
-    /// applies, so registries serving other resource kinds retain the no-clone
-    /// fast path. All owned outputs are removed before any derivation, and each
-    /// applicability predicate is evaluated at most once in insertion order.
-    pub(crate) fn apply_to_clone_if_applicable(&self, res: &Resource) -> Option<Resource> {
-        let has_owned_output = self
-            .labelers
-            .iter()
-            .any(|labeler| res.attributes().contains_key(labeler.output()));
-
-        if has_owned_output {
-            let mut labelled = res.clone();
-            self.apply(&mut labelled);
-            return Some(labelled);
-        }
-
-        let first_match = self
-            .labelers
-            .iter()
-            .position(|labeler| labeler.applies_to(res.kind()))?;
-
-        let mut labelled = res.clone();
-        self.clear_owned_outputs(&mut labelled);
-        self.labelers[first_match].apply(&mut labelled);
-        for labeler in &self.labelers[first_match + 1..] {
-            if labeler.applies_to(labelled.kind()) {
-                labeler.apply(&mut labelled);
-            }
-        }
+    /// Clone only when at least one target owns an attribute on this resource type.
+    pub(crate) fn apply_to_clone_if_applicable(&self, resource: &Resource) -> Option<Resource> {
+        let labelers = self.scopes.get(resource.cedar_entity_uid().type_name())?;
+        let mut labelled = resource.clone();
+        Self::apply_scope(labelers, &mut labelled);
         Some(labelled)
     }
 
-    /// Applies all labelers in the registry to the given resource.
+    /// Clear all outputs owned on this type, then derive in registration order.
     ///
-    /// All registry-owned outputs are removed before checking applicability or
-    /// running derivations. Applicable labelers then run in insertion order and
-    /// own distinct output attributes.
-    pub fn apply(&self, res: &mut Resource) {
-        self.clear_owned_outputs(res);
-        for labeler in self.labelers.iter() {
-            if labeler.applies_to(res.kind()) {
-                labeler.apply(res);
-            }
+    /// Clearing before any derivation prevents an earlier labeler from trusting
+    /// a caller-supplied value owned by a later labeler. Other types are unchanged.
+    pub fn apply(&self, resource: &mut Resource) {
+        if let Some(labelers) = self.scopes.get(resource.cedar_entity_uid().type_name()) {
+            Self::apply_scope(labelers, resource);
         }
     }
 
-    fn clear_owned_outputs(&self, res: &mut Resource) {
-        for labeler in self.labelers.iter() {
-            res.attrs().remove(labeler.output());
+    fn apply_scope(labelers: &[RegisteredLabeler], resource: &mut Resource) {
+        for labeler in labelers {
+            resource.attrs().remove(labeler.target.attribute());
+        }
+        for labeler in labelers {
+            labeler.apply(resource);
         }
     }
 }
@@ -296,14 +344,11 @@ impl LabelRegistry {
 ///
 /// ```rust
 /// use std::sync::Arc;
-/// use treetop_core::{LabelRegistryBuilder, RegexLabeler};
+/// use treetop_core::{LabelTarget, LabelRegistryBuilder, RegexLabeler};
 /// use regex::Regex;
 ///
 /// let registry = LabelRegistryBuilder::new()
-///     .add_labeler(Arc::new(RegexLabeler::new(
-///         "Host",
-///         "name",
-///         "nameLabels",
+///     .add_labeler(Arc::new(RegexLabeler::new(LabelTarget::new("Host", "nameLabels").unwrap(), "name",
 ///         vec![("prod".to_string(), Regex::new(r"\.prod\.").unwrap())],
 ///     ).unwrap()))
 ///     .build()
@@ -346,24 +391,35 @@ impl LabelRegistryBuilder {
 
     /// Validate and build the immutable label registry.
     ///
-    /// Fails for an empty configured version, a reserved output, or duplicate
-    /// output ownership. Consumes the builder and returns a registry ready to
-    /// install with PolicyEngine::with_label_registry.
+    /// Fails for an empty configured version or duplicate `(resource type,
+    /// attribute)` ownership. Targets have already validated reserved names.
+    /// Consumes the builder and returns a registry ready to install with
+    /// `PolicyEngine::with_label_registry`.
     pub fn build(self) -> Result<LabelRegistry, PolicyError> {
         let version = self.version.map(LabelSetVersion::new).transpose()?;
-        let mut outputs = HashSet::with_capacity(self.labelers.len());
+        let mut targets = HashSet::with_capacity(self.labelers.len());
+        let mut scopes: HashMap<EntityTypeName, Vec<RegisteredLabeler>> = HashMap::new();
         for labeler in &self.labelers {
-            validate_output(labeler.output())?;
-            if !outputs.insert(labeler.output()) {
+            let target = labeler.target();
+            if !targets.insert(target) {
                 return Err(PolicyError::LabelConfigError(format!(
-                    "multiple labelers own output '{}'",
-                    labeler.output()
+                    "multiple labelers own target ({}, {})",
+                    target.resource_type(),
+                    target.attribute()
                 )));
             }
+            let target = target.clone();
+            scopes
+                .entry(target.entity_type.clone())
+                .or_default()
+                .push(RegisteredLabeler {
+                    target,
+                    labeler: Arc::clone(labeler),
+                });
         }
         Ok(LabelRegistry {
             version,
-            labelers: self.labelers.into(),
+            scopes: Arc::new(scopes),
         })
     }
 }
@@ -374,37 +430,152 @@ mod tests {
     use std::collections::BTreeSet;
     use yare::parameterized;
 
-    struct EchoOwnedOutput;
+    #[test]
+    fn targets_validate_and_round_trip_through_the_same_boundary() {
+        let target = LabelTarget::new("App::Host", "labels").unwrap();
+        let json = serde_json::json!({"resource_type": "App::Host", "attribute": "labels"});
+        assert_eq!(serde_json::to_value(&target).unwrap(), json);
+        assert_eq!(serde_json::from_value::<LabelTarget>(json).unwrap(), target);
+        for resource_type in ["", "*", "App::*", "App::", "App::Host::\"one\""] {
+            assert!(LabelTarget::new(resource_type, "labels").is_err());
+            assert!(
+                serde_json::from_value::<LabelTarget>(serde_json::json!({
+                    "resource_type": resource_type, "attribute": "labels"
+                }))
+                .is_err()
+            );
+        }
+        for attribute in ["", " ", "id"] {
+            assert!(LabelTarget::new("App::Host", attribute).is_err());
+            assert!(
+                serde_json::from_value::<LabelTarget>(serde_json::json!({
+                    "resource_type": "App::Host", "attribute": attribute
+                }))
+                .is_err()
+            );
+        }
+        for json in [
+            serde_json::json!({"kind": "App::Host", "output": "labels"}),
+            serde_json::json!({"resource_type": "App::Host"}),
+            serde_json::json!({"resource_type": "App::Host", "attribute": "labels", "extra": true}),
+        ] {
+            assert!(serde_json::from_value::<LabelTarget>(json).is_err());
+        }
+    }
+
+    #[test]
+    fn identical_attribute_names_have_independent_qualified_type_owners() {
+        let mut builder = LabelRegistryBuilder::new();
+        let pattern = Regex::new("prod").unwrap();
+        for resource_type in ["App::Host", "Other::Host"] {
+            builder = builder.add_labeler(Arc::new(
+                RegexLabeler::new(
+                    LabelTarget::new(resource_type, "labels").unwrap(),
+                    "name",
+                    vec![(resource_type.to_string(), pattern.clone())],
+                )
+                .unwrap(),
+            ));
+        }
+        let registry = builder.build().unwrap();
+        for resource_type in ["App::Host", "Other::Host"] {
+            let mut resource = Resource::new(resource_type, "one")
+                .unwrap()
+                .with_attr("name", AttrValue::String("prod".into()))
+                .with_attr("labels", AttrValue::String("forged".into()));
+            registry.apply(&mut resource);
+            assert_eq!(
+                resource.attributes().get("labels"),
+                Some(&AttrValue::Set(vec![AttrValue::String(
+                    resource_type.to_string()
+                )]))
+            );
+            let first = resource.clone();
+            registry.apply(&mut resource);
+            assert_eq!(resource, first);
+        }
+    }
+
+    #[test]
+    fn direct_application_enforces_the_declared_scope() {
+        let labeler = EchoOwnedOutput(LabelTarget::new("App::Host", "labels").unwrap());
+        let mut other = Resource::new("Other::Host", "one")
+            .unwrap()
+            .with_attr("labels", AttrValue::String("application input".into()));
+        let original = other.clone();
+        labeler.apply(&mut other);
+        assert_eq!(other, original);
+        let mut matching = Resource::new("App::Host", "one")
+            .unwrap()
+            .with_attr("labels", AttrValue::String("forged".into()));
+        labeler.apply(&mut matching);
+        assert!(!matching.attributes().contains_key("labels"));
+    }
+
+    #[test]
+    fn registry_freezes_targets_at_construction() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct ChangingDeclaration {
+            original: LabelTarget,
+            replacement: LabelTarget,
+            changed: AtomicBool,
+        }
+        impl Labeler for ChangingDeclaration {
+            fn target(&self) -> &LabelTarget {
+                if self.changed.load(Ordering::Relaxed) {
+                    &self.replacement
+                } else {
+                    &self.original
+                }
+            }
+            fn derive(&self, _: &Resource) -> Option<AttrValue> {
+                Some(AttrValue::Bool(true))
+            }
+        }
+        let labeler = Arc::new(ChangingDeclaration {
+            original: LabelTarget::new("App::Host", "labels").unwrap(),
+            replacement: LabelTarget::new("Other::Host", "other").unwrap(),
+            changed: AtomicBool::new(false),
+        });
+        let registry = LabelRegistryBuilder::new()
+            .add_labeler(labeler.clone())
+            .build()
+            .unwrap();
+        labeler.changed.store(true, Ordering::Relaxed);
+        let mut original = Resource::new("App::Host", "one").unwrap();
+        registry.apply(&mut original);
+        assert_eq!(
+            original.attributes().get("labels"),
+            Some(&AttrValue::Bool(true))
+        );
+        assert!(!original.attributes().contains_key("other"));
+        let other = Resource::new("Other::Host", "one").unwrap();
+        assert!(registry.apply_to_clone_if_applicable(&other).is_none());
+    }
+
+    struct EchoOwnedOutput(LabelTarget);
 
     impl Labeler for EchoOwnedOutput {
-        fn applies_to(&self, kind: &str) -> bool {
-            kind == "Host"
+        fn target(&self) -> &LabelTarget {
+            &self.0
         }
-
-        fn output(&self) -> &str {
-            "labels"
-        }
-
         fn derive(&self, resource: &Resource) -> Option<AttrValue> {
-            resource.attributes().get(self.output()).cloned()
+            resource
+                .attributes()
+                .get(self.target().attribute())
+                .cloned()
         }
     }
 
     struct CopyAttribute {
-        kind: &'static str,
+        target: LabelTarget,
         input: &'static str,
-        output: &'static str,
     }
 
     impl Labeler for CopyAttribute {
-        fn applies_to(&self, kind: &str) -> bool {
-            kind == self.kind
+        fn target(&self) -> &LabelTarget {
+            &self.target
         }
-
-        fn output(&self) -> &str {
-            self.output
-        }
-
         fn derive(&self, resource: &Resource) -> Option<AttrValue> {
             resource.attributes().get(self.input).cloned()
         }
@@ -461,7 +632,12 @@ mod tests {
         input: &str,
         expected: &[&str],
     ) {
-        let labeler = RegexLabeler::new(kind, field, output, compile(rules)).unwrap();
+        let labeler = RegexLabeler::new(
+            LabelTarget::new(kind, output).unwrap(),
+            field,
+            compile(rules),
+        )
+        .unwrap();
 
         let mut res = Resource::new(kind, input).unwrap();
         res.attrs()
@@ -477,9 +653,8 @@ mod tests {
     #[test]
     fn regex_labeler_missing_input_field_is_noop() {
         let labeler = RegexLabeler::new(
-            "Host",
+            LabelTarget::new("Host", "nameLabels").unwrap(),
             "name",
-            "nameLabels",
             compile(vec![("prod", r"(^|\.)prod\.")]),
         )
         .unwrap();
@@ -494,9 +669,8 @@ mod tests {
     #[test]
     fn regex_labeler_replaces_untrusted_existing_set() {
         let labeler = RegexLabeler::new(
-            "Host",
+            LabelTarget::new("Host", "nameLabels").unwrap(),
             "name",
-            "nameLabels",
             compile(vec![("prod", r"(^|\.)prod\."), ("db", r"(^|\.)db\d+\.")]),
         )
         .unwrap();
@@ -522,9 +696,8 @@ mod tests {
     #[test]
     fn regex_labeler_replaces_untrusted_set_when_no_rule_matches() {
         let labeler = RegexLabeler::new(
-            "Host",
+            LabelTarget::new("Host", "nameLabels").unwrap(),
             "name",
-            "nameLabels",
             compile(vec![("prod", r"(^|\.)prod\.")]),
         )
         .unwrap();
@@ -547,9 +720,8 @@ mod tests {
     #[test]
     fn regex_labeler_removes_untrusted_output_when_input_is_missing() {
         let labeler = RegexLabeler::new(
-            "Host",
+            LabelTarget::new("Host", "nameLabels").unwrap(),
             "name",
-            "nameLabels",
             compile(vec![("prod", r"(^|\.)prod\.")]),
         )
         .unwrap();
@@ -571,26 +743,27 @@ mod tests {
             .unwrap()
             .with_attr("labels", AttrValue::String("forged".into()));
 
-        EchoOwnedOutput.apply(&mut resource);
+        EchoOwnedOutput(LabelTarget::new("Host", "labels").unwrap()).apply(&mut resource);
 
         assert!(!resource.attributes().contains_key("labels"));
     }
 
     #[test]
-    fn registry_removes_owned_output_when_no_labeler_applies() {
+    fn registry_preserves_other_types_attributes_without_cloning() {
         let registry = LabelRegistryBuilder::new()
-            .add_labeler(Arc::new(EchoOwnedOutput))
+            .add_labeler(Arc::new(EchoOwnedOutput(
+                LabelTarget::new("Host", "labels").unwrap(),
+            )))
             .build()
             .unwrap();
         let resource = Resource::new("Document", "report")
             .unwrap()
             .with_attr("labels", AttrValue::String("forged".into()));
 
-        let labelled = registry
-            .apply_to_clone_if_applicable(&resource)
-            .expect("an owned input attribute must produce a sanitized clone");
-
-        assert!(!labelled.attributes().contains_key("labels"));
+        assert!(registry.apply_to_clone_if_applicable(&resource).is_none());
+        let mut applied = resource.clone();
+        registry.apply(&mut applied);
+        assert_eq!(applied, resource);
         assert_eq!(
             resource.attributes().get("labels"),
             Some(&AttrValue::String("forged".into()))
@@ -601,14 +774,12 @@ mod tests {
     fn registry_clears_later_owned_output_before_earlier_derivation() {
         let registry = LabelRegistryBuilder::new()
             .add_labeler(Arc::new(CopyAttribute {
-                kind: "Host",
+                target: LabelTarget::new("Host", "labels").unwrap(),
                 input: "laterLabels",
-                output: "labels",
             }))
             .add_labeler(Arc::new(CopyAttribute {
-                kind: "Document",
+                target: LabelTarget::new("Host", "laterLabels").unwrap(),
                 input: "unused",
-                output: "laterLabels",
             }))
             .build()
             .unwrap();
@@ -624,16 +795,33 @@ mod tests {
 
     #[test]
     fn registry_rejects_ambiguous_or_reserved_outputs() {
-        let first = RegexLabeler::new("Host", "name", "labels", Vec::new()).unwrap();
-        let second = RegexLabeler::new("Host", "owner", "labels", Vec::new()).unwrap();
+        let first = RegexLabeler::new(
+            LabelTarget::new("Host", "labels").unwrap(),
+            "name",
+            Vec::new(),
+        )
+        .unwrap();
+        let second = RegexLabeler::new(
+            LabelTarget::new("Host", "labels").unwrap(),
+            "owner",
+            Vec::new(),
+        )
+        .unwrap();
         let duplicate = LabelRegistryBuilder::new()
             .add_labeler(Arc::new(first))
             .add_labeler(Arc::new(second))
             .build();
         assert!(matches!(duplicate, Err(PolicyError::LabelConfigError(_))));
 
-        assert!(RegexLabeler::new("Host", "name", "id", Vec::new()).is_err());
-        assert!(RegexLabeler::new("Host", "name", "name", Vec::new()).is_err());
+        assert!(LabelTarget::new("Host", "id").is_err());
+        assert!(
+            RegexLabeler::new(
+                LabelTarget::new("Host", "name").unwrap(),
+                "name",
+                Vec::new()
+            )
+            .is_err()
+        );
         assert!(LabelRegistryBuilder::versioned("").build().is_err());
     }
 
@@ -658,7 +846,14 @@ mod tests {
                 .is_ok()
             );
             assert!(validate_output(output).is_ok(), "{output:?}");
-            assert!(RegexLabeler::new("Host", "name", output, Vec::new()).is_ok());
+            assert!(
+                RegexLabeler::new(
+                    LabelTarget::new("Host", output).unwrap(),
+                    "name",
+                    Vec::new()
+                )
+                .is_ok()
+            );
         }
         for output in ["", " ", "\t\n", "id"] {
             assert!(matches!(
@@ -670,8 +865,12 @@ mod tests {
 
     #[test]
     fn controlled_apply_is_idempotent() {
-        let labeler =
-            RegexLabeler::new("Host", "name", "labels", compile(vec![("prod", "prod")])).unwrap();
+        let labeler = RegexLabeler::new(
+            LabelTarget::new("Host", "labels").unwrap(),
+            "name",
+            compile(vec![("prod", "prod")]),
+        )
+        .unwrap();
         let mut resource = Resource::new("Host", "prod")
             .unwrap()
             .with_attr("name", AttrValue::String("prod".into()))

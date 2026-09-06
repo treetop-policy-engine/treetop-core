@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-06
+
+### Breaking changes
+
+- Replace `Labeler::applies_to` and `output` with one validated `LabelTarget`,
+  returned by `target()`. Targets contain an exact fully qualified resource type
+  and attribute; wildcard and global labelers are removed. Construct regex
+  labelers with `RegexLabeler::new(target, field, rules)`.
+- Enforce unique `(resource type, attribute)` ownership. Different types may own
+  the same attribute name independently. Registry and direct application only
+  sanitize outputs on the declared type; unrelated application attributes survive.
+  Constrain policy resource types before trusting derived attributes. Registries
+  freeze targets, clear all owned outputs before derivation, and retain ordered,
+  immutable application within each scope.
+- Require `label_set` (explicit null is valid) and unsigned `generation` when
+  deserializing policy versions. Omitted legacy metadata is rejected.
+- Remove deprecated `UserPolicies`, `actions()`, and `actions_by_name()` aliases.
+  Use `PolicyCandidates`, `candidate_actions()`, and `candidate_actions_by_name()`.
+- See [DeclaredTargets](docs/DeclaredTargets.md) for the coordinated configuration
+  and caller migration. No compatibility adapter or old-syntax alias is retained.
+
 ## [0.0.25] - 2026-09-05
 
 ### Performance

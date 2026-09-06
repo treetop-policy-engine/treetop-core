@@ -1,5 +1,14 @@
 # Repository Guidelines
 
+## Early-release contract
+
+Prioritize correctness and strict, uniform project contracts over compatibility.
+Remove deprecated APIs, old-syntax aliases, and obsolete server fallbacks when
+replacing a contract. Document breaking changes and concrete migration steps.
+Label ownership and sanitization are keyed by exact fully qualified resource type
+and attribute, declared by validated `LabelTarget` values; no global or wildcard
+applicability adapters are supported.
+
 ## Project Overview
 
 `treetop-core` is a Rust library that turns Cedar policies and application-owned

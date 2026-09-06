@@ -1,8 +1,8 @@
 use regex::Regex;
 use std::sync::Arc;
 use treetop_core::{
-    Action, AttrValue, LabelRegistryBuilder, PolicyEngine, Principal, RegexLabeler, Request,
-    Resource, User,
+    Action, AttrValue, LabelRegistryBuilder, LabelTarget, PolicyEngine, Principal, RegexLabeler,
+    Request, Resource, User,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -75,9 +75,8 @@ fn build_registry(labelers: usize) -> Option<treetop_core::LabelRegistry> {
 
     for idx in 0..labelers {
         let labeler = RegexLabeler::new(
-            "Host",
+            LabelTarget::new("Host", format!("name_labels_{idx}")).unwrap(),
             "name",
-            format!("name_labels_{idx}"),
             vec![
                 (format!("domain_match_{idx}"), domain_regex.clone()),
                 (format!("web_prefix_{idx}"), web_regex.clone()),

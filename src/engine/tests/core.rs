@@ -67,7 +67,12 @@ fn test_concurrent_label_registry_access() {
     use std::thread;
 
     let patterns = vec![("test_label".to_string(), Regex::new(r"test").unwrap())];
-    let labeler = RegexLabeler::new("Host", "name", "nameLabels", patterns).unwrap();
+    let labeler = RegexLabeler::new(
+        LabelTarget::new("Host", "nameLabels").unwrap(),
+        "name",
+        patterns,
+    )
+    .unwrap();
 
     let label_registry = Arc::new(
         LabelRegistryBuilder::versioned("concurrency-v1")
@@ -161,7 +166,12 @@ fn test_whitespace_only_policy() {
 #[test]
 fn test_label_registry_initialization() {
     let patterns1 = vec![("label1".to_string(), Regex::new(r"test1").unwrap())];
-    let labeler1 = RegexLabeler::new("Host", "name", "nameLabels", patterns1).unwrap();
+    let labeler1 = RegexLabeler::new(
+        LabelTarget::new("Host", "nameLabels").unwrap(),
+        "name",
+        patterns1,
+    )
+    .unwrap();
 
     let label_registry = LabelRegistryBuilder::versioned("initial-v1")
         .add_labeler(Arc::new(labeler1))
@@ -199,7 +209,12 @@ fn test_apply_labels_with_no_labelers() {
 #[test]
 fn test_label_registry_replacement() {
     let patterns1 = vec![("old_label".to_string(), Regex::new(r"old").unwrap())];
-    let labeler1 = RegexLabeler::new("Host", "name", "nameLabels", patterns1).unwrap();
+    let labeler1 = RegexLabeler::new(
+        LabelTarget::new("Host", "nameLabels").unwrap(),
+        "name",
+        patterns1,
+    )
+    .unwrap();
 
     let old_registry = LabelRegistryBuilder::versioned("replacement-v1")
         .add_labeler(Arc::new(labeler1))
@@ -207,7 +222,12 @@ fn test_label_registry_replacement() {
         .unwrap();
 
     let patterns2 = vec![("new_label".to_string(), Regex::new(r"new").unwrap())];
-    let labeler2 = RegexLabeler::new("Host", "name", "nameLabels", patterns2).unwrap();
+    let labeler2 = RegexLabeler::new(
+        LabelTarget::new("Host", "nameLabels").unwrap(),
+        "name",
+        patterns2,
+    )
+    .unwrap();
 
     let label_registry = LabelRegistryBuilder::versioned("replacement-v2")
         .add_labeler(Arc::new(labeler2))
@@ -241,9 +261,8 @@ fn test_label_registry_replacement() {
 fn evaluation_session_freezes_policy_and_label_generation() {
     fn registry(version: &str, label: &str) -> LabelRegistry {
         let labeler = RegexLabeler::new(
-            "Host",
+            LabelTarget::new("Host", "labels").unwrap(),
             "name",
-            "labels",
             vec![(label.to_string(), Regex::new(".*").unwrap())],
         )
         .unwrap();

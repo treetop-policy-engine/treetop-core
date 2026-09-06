@@ -21,10 +21,15 @@ current expectations, and initial measurements.
 
 ## Bench Files
 
-- `bench_iai_label_registry.rs` measures one cold registry construction without
-  setup that could initialize Cedar extensions first. `label_registry_criterion.rs`
-  measures steady-state construction latency. Keep the cold probe separate from
-  evaluation fixtures so accidental validation startup work remains visible.
+- `bench_iai_label_target.rs` measures cold validation of a declared resource
+  type and attribute; `label_target_criterion.rs` measures steady-state parsing.
+  Keep this probe cold so Cedar initialization work remains visible.
+- `bench_iai_label_registry.rs` measures registration of an already validated
+  labeler, with declaration setup outside measurement. `label_registry_criterion.rs`
+  measures the same construction boundary. The previous wildcard fixture did
+  not parse any resource type. It is no longer a supported labeler, so the target
+  parsing and registration phases now have separate probes. Request evaluation
+  benchmarks still include the complete unchanged request workload.
 
 - `benches/evaluate_common.rs` contains the shared scenario matrix and fixture
   builder.

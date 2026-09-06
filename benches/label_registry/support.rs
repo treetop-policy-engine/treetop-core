@@ -1,25 +1,26 @@
 use std::sync::Arc;
-use treetop_core::{AttrValue, LabelRegistry, LabelRegistryBuilder, Labeler, Resource};
+use treetop_core::{
+    AttrValue, LabelRegistry, LabelRegistryBuilder, LabelTarget, Labeler, Resource,
+};
 
-struct EmptyLabeler;
+struct EmptyLabeler(LabelTarget);
 
 impl Labeler for EmptyLabeler {
-    fn applies_to(&self, _: &str) -> bool {
-        true
+    fn target(&self) -> &LabelTarget {
+        &self.0
     }
-
-    fn output(&self) -> &str {
-        "labels"
-    }
-
     fn derive(&self, _: &Resource) -> Option<AttrValue> {
         None
     }
 }
 
-pub fn build_registry() -> LabelRegistry {
+pub fn prepare_labeler() -> Arc<dyn Labeler> {
+    Arc::new(EmptyLabeler(LabelTarget::new("Host", "labels").unwrap()))
+}
+
+pub fn build_registry(labeler: Arc<dyn Labeler>) -> LabelRegistry {
     LabelRegistryBuilder::new()
-        .add_labeler(Arc::new(EmptyLabeler))
+        .add_labeler(labeler)
         .build()
         .unwrap()
 }

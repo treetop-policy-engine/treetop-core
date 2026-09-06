@@ -11,7 +11,7 @@
 //! ```rust
 //! use regex::Regex;
 //! use std::sync::Arc;
-//! use treetop_core::{Action, AttrValue, PolicyEngine, Request, User, Principal, Resource, RegexLabeler, LabelRegistryBuilder};
+//! use treetop_core::{LabelTarget, Action, AttrValue, PolicyEngine, Request, User, Principal, Resource, RegexLabeler, LabelRegistryBuilder};
 //! use sha2::{Digest, Sha256};
 //!
 //! let policies = r#"
@@ -32,10 +32,7 @@
 //!     ("webserver".to_string(), Regex::new(r"^web-\d+").unwrap()),
 //! ];
 //! let label_registry = LabelRegistryBuilder::new()
-//!     .add_labeler(Arc::new(RegexLabeler::new(
-//!         "Host",
-//!         "name",
-//!         "nameLabels",
+//!     .add_labeler(Arc::new(RegexLabeler::new(LabelTarget::new("Host", "nameLabels").unwrap(), "name",
 //!         patterns.into_iter().collect(),
 //!     ).unwrap()))
 //!     .build()
@@ -104,19 +101,18 @@ pub use cedar_policy::Schema;
 pub use engine::{EvaluationSession, PolicyEngine, SchemaEnforcing, SchemaFree, ValidationMode};
 pub use error::PolicyError;
 pub use labels::{
-    LabelRegistry, LabelRegistryBuilder, LabelSetVersion, Labeler, LabelerApply, RegexLabeler,
+    LabelRegistry, LabelRegistryBuilder, LabelSetVersion, LabelTarget, Labeler, LabelerApply,
+    RegexLabeler,
 };
 pub use loader::{compile_policy, compile_policy_with_schema};
 pub use policy_store::{
     POLICY_STORE_ANNOTATION, PolicyStoreConfig, PolicyStoreId, PolicyStoreLayout,
 };
-#[allow(deprecated)] // Re-export the migration alias without warning inside this crate.
 pub use types::{
     Action, AttrValue, CedarIp, CedarType, Decision, DecisionDiagnostics, DecisionDto, Group,
     Groups, PermitPolicies, PermitPolicy, PolicyCandidates, PolicyEffectFilter, PolicyMatch,
     PolicyMatchReason, PolicyVersion, Principal, Request, RequestContext, Resource, User,
-    UserPolicies, action_entity_uid, group_entity_uid, namespace_segments, resource_entity_uid,
-    user_entity_uid,
+    action_entity_uid, group_entity_uid, namespace_segments, resource_entity_uid, user_entity_uid,
 };
 
 #[cfg(feature = "observability")]
