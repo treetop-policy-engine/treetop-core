@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use super::*;
-use crate::labels::{LabelRegistry, LabelRegistryBuilder, Labeler, RegexLabeler};
+use crate::labels::{LabelRegistry, LabelRegistryBuilder, LabelTarget, Labeler, RegexLabeler};
 use crate::snapshot_decision;
 use crate::types::AttrValue;
 use crate::types::{Group, Resource};

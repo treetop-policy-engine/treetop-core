@@ -1,6 +1,6 @@
 [package]
 name = "treetop-core"
-version = "0.0.25"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.93.1"
 autobenches = false
@@ -178,3 +178,11 @@ required-features = ["bench-internal"]
 name = "bench_iai_timers"
 harness = false
 required-features = ["bench-internal"]
+
+[[bench]]
+name = "bench_iai_label_target"
+harness = false
+
+[[bench]]
+name = "label_target_criterion"
+harness = false

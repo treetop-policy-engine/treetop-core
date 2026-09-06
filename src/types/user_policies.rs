@@ -138,14 +138,6 @@ impl PolicyCandidates {
         &self.actions
     }
 
-    /// Backward-compatible alias for [`Self::candidate_actions`].
-    ///
-    /// This is not a list of authorized actions.
-    #[deprecated(note = "use candidate_actions(); listing results do not authorize actions")]
-    pub fn actions(&self) -> &[EntityUid] {
-        self.candidate_actions()
-    }
-
     pub fn policies(&self) -> &[Policy] {
         &self.policies
     }
@@ -177,14 +169,6 @@ impl PolicyCandidates {
         actions
     }
 
-    /// Backward-compatible alias for [`Self::candidate_actions_by_name`].
-    #[deprecated(
-        note = "use candidate_actions_by_name(); listing results do not authorize actions"
-    )]
-    pub fn actions_by_name(&self) -> Vec<String> {
-        self.candidate_actions_by_name()
-    }
-
     /// Get the policies as a sorted list of strings.
     pub fn policies_by_name(&self) -> Vec<String> {
         let mut policies = self
@@ -196,10 +180,6 @@ impl PolicyCandidates {
         policies
     }
 }
-
-/// Backward-compatible name for structurally matched policy candidates.
-#[deprecated(note = "renamed to PolicyCandidates to emphasize that listing is not authorization")]
-pub type UserPolicies = PolicyCandidates;
 
 impl Serialize for PolicyCandidates {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>

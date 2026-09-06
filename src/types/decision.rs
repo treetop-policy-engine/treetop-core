@@ -171,11 +171,18 @@ pub struct PolicyVersion {
     #[schema(value_type = String)]
     pub loaded_at: Arc<str>,
     /// Application-defined label-set version, when the installed registry has one.
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_label_set")]
+    #[schema(required = true)]
     pub label_set: Option<LabelSetVersion>,
     /// Monotonic generation within this engine instance.
-    #[serde(default)]
     pub generation: u64,
+}
+
+fn deserialize_label_set<'de, D>(deserializer: D) -> Result<Option<LabelSetVersion>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<LabelSetVersion>::deserialize(deserializer)
 }
 
 impl Display for PolicyVersion {
@@ -465,6 +472,30 @@ mod tests {
     #[test]
     fn permit_policy_uses_annotation_id() {
         assert_eq!(policy().id(), "allow_read");
+    }
+
+    #[test]
+    fn policy_version_requires_complete_current_metadata() {
+        let complete = serde_json::to_value(version()).unwrap();
+        for field in ["hash", "loaded_at", "label_set", "generation"] {
+            let mut missing = complete.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<PolicyVersion>(missing).is_err(),
+                "accepted missing {field}"
+            );
+        }
+        let mut null_generation = complete.clone();
+        null_generation["generation"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<PolicyVersion>(null_generation).is_err());
+        let mut null_labels = complete;
+        null_labels["label_set"] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<PolicyVersion>(null_labels)
+                .unwrap()
+                .label_set
+                .is_none()
+        );
     }
 
     #[test]

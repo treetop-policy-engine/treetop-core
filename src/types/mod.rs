@@ -42,7 +42,4 @@ pub use request::Request;
 pub use request_context::RequestContext;
 pub use resource::Resource;
 pub use user::User;
-#[allow(deprecated)] // Re-export the migration alias without warning inside this crate.
-pub use user_policies::{
-    PolicyCandidates, PolicyEffectFilter, PolicyMatch, PolicyMatchReason, UserPolicies,
-};
+pub use user_policies::{PolicyCandidates, PolicyEffectFilter, PolicyMatch, PolicyMatchReason};

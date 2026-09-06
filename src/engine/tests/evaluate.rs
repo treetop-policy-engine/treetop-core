@@ -1,48 +1,36 @@
 use super::*;
 
-struct EchoOwnedOutput;
+struct EchoOwnedOutput(LabelTarget);
 
 impl Labeler for EchoOwnedOutput {
-    fn applies_to(&self, kind: &str) -> bool {
-        kind == "Host"
+    fn target(&self) -> &LabelTarget {
+        &self.0
     }
-
-    fn output(&self) -> &str {
-        "nameLabels"
-    }
-
     fn derive(&self, resource: &Resource) -> Option<AttrValue> {
-        resource.attributes().get(self.output()).cloned()
+        resource
+            .attributes()
+            .get(self.target().attribute())
+            .cloned()
     }
 }
 
-struct CopyLaterOwnedOutput;
+struct CopyLaterOwnedOutput(LabelTarget);
 
 impl Labeler for CopyLaterOwnedOutput {
-    fn applies_to(&self, kind: &str) -> bool {
-        kind == "Host"
+    fn target(&self) -> &LabelTarget {
+        &self.0
     }
-
-    fn output(&self) -> &str {
-        "nameLabels"
-    }
-
     fn derive(&self, resource: &Resource) -> Option<AttrValue> {
         resource.attributes().get("laterLabels").cloned()
     }
 }
 
-struct OwnLaterOutputForOtherKind;
+struct OwnLaterOutput(LabelTarget);
 
-impl Labeler for OwnLaterOutputForOtherKind {
-    fn applies_to(&self, kind: &str) -> bool {
-        kind == "Document"
+impl Labeler for OwnLaterOutput {
+    fn target(&self) -> &LabelTarget {
+        &self.0
     }
-
-    fn output(&self) -> &str {
-        "laterLabels"
-    }
-
     fn derive(&self, _resource: &Resource) -> Option<AttrValue> {
         None
     }
@@ -136,8 +124,12 @@ fn test_policy_with_host_patterns(username: &str, host_name: &str) {
             Regex::new(r"example\.com$").unwrap(),
         ),
     ];
-    let labeler =
-        RegexLabeler::new("Host", "name", "nameLabels", patterns.into_iter().collect()).unwrap();
+    let labeler = RegexLabeler::new(
+        LabelTarget::new("Host", "nameLabels").unwrap(),
+        "name",
+        patterns.into_iter().collect(),
+    )
+    .unwrap();
 
     let label_registry = LabelRegistryBuilder::versioned("host-patterns-v1")
         .add_labeler(Arc::new(labeler))
@@ -164,9 +156,8 @@ fn test_policy_with_host_patterns(username: &str, host_name: &str) {
 #[test]
 fn derived_labels_cannot_be_forged_by_resource_attributes() {
     let labeler = RegexLabeler::new(
-        "Host",
+        LabelTarget::new("Host", "nameLabels").unwrap(),
         "name",
-        "nameLabels",
         vec![(
             "example_domain".to_string(),
             Regex::new(r"example\.com$").unwrap(),
@@ -198,7 +189,9 @@ fn derived_labels_cannot_be_forged_by_resource_attributes() {
 #[test]
 fn custom_labeler_cannot_echo_forged_authorization_label() {
     let registry = LabelRegistryBuilder::versioned("custom-anti-forgery-v1")
-        .add_labeler(Arc::new(EchoOwnedOutput))
+        .add_labeler(Arc::new(EchoOwnedOutput(
+            LabelTarget::new("Host", "nameLabels").unwrap(),
+        )))
         .build()
         .unwrap();
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
@@ -219,9 +212,14 @@ fn custom_labeler_cannot_echo_forged_authorization_label() {
 }
 
 #[test]
-fn non_applicable_labeler_still_removes_forged_owned_output() {
-    let labeler = RegexLabeler::new("Document", "name", "nameLabels", Vec::new()).unwrap();
-    let registry = LabelRegistryBuilder::versioned("non-applicable-anti-forgery-v1")
+fn unrelated_type_labeler_preserves_application_owned_attributes() {
+    let labeler = RegexLabeler::new(
+        LabelTarget::new("Document", "nameLabels").unwrap(),
+        "name",
+        Vec::new(),
+    )
+    .unwrap();
+    let registry = LabelRegistryBuilder::versioned("document-labels-v1")
         .add_labeler(Arc::new(labeler))
         .build()
         .unwrap();
@@ -239,14 +237,24 @@ fn non_applicable_labeler_still_removes_forged_owned_output() {
             ),
     };
 
-    assert!(!engine.evaluate(&request).unwrap().is_allowed());
+    // Host.nameLabels is application-owned because only Document.nameLabels is registered.
+    let decision = engine.evaluate(&request).unwrap();
+    assert!(decision.is_allowed());
+    assert_eq!(
+        decision.version().label_set.as_ref().unwrap().as_str(),
+        "document-labels-v1"
+    );
 }
 
 #[test]
 fn earlier_labeler_cannot_consume_forged_later_owned_output() {
     let registry = LabelRegistryBuilder::versioned("ordered-anti-forgery-v1")
-        .add_labeler(Arc::new(CopyLaterOwnedOutput))
-        .add_labeler(Arc::new(OwnLaterOutputForOtherKind))
+        .add_labeler(Arc::new(CopyLaterOwnedOutput(
+            LabelTarget::new("Host", "nameLabels").unwrap(),
+        )))
+        .add_labeler(Arc::new(OwnLaterOutput(
+            LabelTarget::new("Host", "laterLabels").unwrap(),
+        )))
         .build()
         .unwrap();
     let engine = PolicyEngine::new_from_str(TEST_POLICY_WITH_HOST_PATTERNS)
@@ -475,4 +483,76 @@ forbid (
         diagnostics.matched_forbid_policy_ids(),
         vec!["deny_alice_read".to_string()]
     );
+}
+
+#[test]
+fn qualified_label_targets_keep_authorization_and_sessions_coherent() {
+    fn registry(version: &str, first: &str, second: &str) -> LabelRegistry {
+        let pattern = Regex::new("prod").unwrap();
+        let mut builder = LabelRegistryBuilder::versioned(version);
+        for (resource_type, label) in [("App::Host", first), ("Other::Host", second)] {
+            builder = builder.add_labeler(Arc::new(
+                RegexLabeler::new(
+                    LabelTarget::new(resource_type, "labels").unwrap(),
+                    "name",
+                    vec![(label.to_string(), pattern.clone())],
+                )
+                .unwrap(),
+            ));
+        }
+        builder.build().unwrap()
+    }
+    fn request(resource_type: &str) -> Request {
+        Request {
+            principal: Principal::User(User::new("alice", None, None).unwrap()),
+            action: Action::new("read", None).unwrap(),
+            resource: Resource::new(resource_type, "one")
+                .unwrap()
+                .with_attr("name", AttrValue::String("prod".into()))
+                .with_attr(
+                    "labels",
+                    AttrValue::Set(vec![AttrValue::String("trusted".into())]),
+                ),
+        }
+    }
+    let engine = PolicyEngine::new_from_str(
+        r#"
+        permit(principal, action, resource is App::Host)
+          when { resource.labels.contains("trusted") };
+        permit(principal, action, resource is Other::Host);
+        forbid(principal, action, resource is Other::Host)
+          when { resource.labels.contains("blocked") };
+    "#,
+    )
+    .unwrap()
+    .with_label_registry(registry("initial", "trusted", "blocked"));
+    let old = engine.session();
+    assert!(old.evaluate(&request("App::Host")).unwrap().is_allowed());
+    assert!(!old.evaluate(&request("Other::Host")).unwrap().is_allowed());
+    engine.set_label_registry(registry("replacement", "untrusted", "clear"));
+    assert!(!engine.evaluate(&request("App::Host")).unwrap().is_allowed());
+    assert!(
+        engine
+            .evaluate(&request("Other::Host"))
+            .unwrap()
+            .is_allowed()
+    );
+    for resource_type in ["App::Host", "Other::Host"] {
+        let decision = old.evaluate(&request(resource_type)).unwrap();
+        assert_eq!(decision.version(), &old.version());
+        assert_eq!(
+            decision.version().label_set.as_ref().unwrap().as_str(),
+            "initial"
+        );
+    }
+    let before = engine.current_version();
+    let target = LabelTarget::new("App::Host", "labels").unwrap();
+    assert!(
+        LabelRegistryBuilder::new()
+            .add_labeler(Arc::new(EchoOwnedOutput(target.clone())))
+            .add_labeler(Arc::new(EchoOwnedOutput(target)))
+            .build()
+            .is_err()
+    );
+    assert_eq!(engine.current_version(), before);
 }

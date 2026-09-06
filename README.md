@@ -101,7 +101,7 @@ permit (
 ```rust
  use regex::Regex;
  use std::sync::Arc;
- use treetop_core::{Action, AttrValue, DecisionDto, LabelRegistryBuilder, PolicyEngine, Principal, RegexLabeler, Request, Resource, User};
+ use treetop_core::{LabelTarget, Action, AttrValue, DecisionDto, LabelRegistryBuilder, PolicyEngine, Principal, RegexLabeler, Request, Resource, User};
 
  let policies = r#"
  permit (
@@ -121,10 +121,7 @@ permit (
      ("webserver".to_string(), Regex::new(r"^web-\d+").unwrap()),
  ];
  let label_registry = LabelRegistryBuilder::new()
-     .add_labeler(Arc::new(RegexLabeler::new(
-         "Host",
-         "name",
-         "nameLabels",
+     .add_labeler(Arc::new(RegexLabeler::new(LabelTarget::new("Host", "nameLabels").unwrap(), "name",
          patterns.into_iter().collect(),
      ).unwrap()))
      .build()
@@ -198,22 +195,18 @@ restarts. `LabelRegistryBuilder::new()` avoids that naming requirement; the
 engine generation still distinguishes registry replacements within one engine.
 
 Custom labelers retain receiver-style application. Implementations only derive
-one declared output from an immutable resource; the blanket `LabelerApply`
+one declared `(resource type, attribute)` target from an immutable resource; the blanket `LabelerApply`
 implementation owns replace-or-remove mutation, so it cannot be overridden by
 an individual labeler:
 
 ```rust
-use treetop_core::{AttrValue, Labeler, LabelerApply, Resource};
+use treetop_core::{LabelTarget, AttrValue, Labeler, LabelerApply, Resource};
 
-struct EnvironmentLabeler;
+struct EnvironmentLabeler(LabelTarget);
 
 impl Labeler for EnvironmentLabeler {
-    fn applies_to(&self, kind: &str) -> bool {
-        kind == "Host"
-    }
-
-    fn output(&self) -> &str {
-        "environment"
+    fn target(&self) -> &LabelTarget {
+        &self.0
     }
 
     fn derive(&self, resource: &Resource) -> Option<AttrValue> {
@@ -222,8 +215,20 @@ impl Labeler for EnvironmentLabeler {
 }
 
 let mut resource = Resource::new("Host", "api.prod").unwrap();
-EnvironmentLabeler.apply(&mut resource);
+let labeler = EnvironmentLabeler(LabelTarget::new("Host", "environment").unwrap());
+labeler.apply(&mut resource);
 ```
+
+Targets use exact, fully qualified Cedar resource types. `App::Host.labels` and
+`Other::Host.labels` can have different owners; two owners of `App::Host.labels`
+are rejected while building the registry. Core checks the scope even for direct
+`labeler.apply(...)` calls. Wildcards and arbitrary applicability predicates are
+not supported.
+
+Before any derivation, the registry clears every attribute owned on that resource
+type. Same-named attributes on unrelated types remain application-owned and are
+not sanitized. Policies must constrain the resource type before treating an
+attribute as server-derived. See [the breaking migration](docs/DeclaredTargets.md).
 
 If your Cedar policies use `context`, pass it explicitly at evaluation time:
 
@@ -319,7 +324,7 @@ their namespaced action, resource, and condition references, and routes each
 request to exactly one store using the same namespace ownership rules:
 
 ```rust
-use treetop_core::{PolicyEngine, PolicyStoreConfig, PolicyStoreLayout};
+use treetop_core::{LabelTarget, PolicyEngine, PolicyStoreConfig, PolicyStoreLayout};
 
 let layout = PolicyStoreLayout::new([
     PolicyStoreConfig::new("dns", "ExampleCo::DNS").unwrap(),
