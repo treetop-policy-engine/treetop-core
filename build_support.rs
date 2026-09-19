@@ -155,7 +155,7 @@ mod tests {
     fn parses_current_source_manifest() {
         assert_eq!(
             cedar_policy_version(include_str!("Cargo.toml")).as_deref(),
-            Some("4.12.0")
+            Some("4.13.0")
         );
     }
 }
