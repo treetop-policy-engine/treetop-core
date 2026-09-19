@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Cedar 4.13 serializes nested `has` expressions in returned policy
+  JSON with an array-valued `attr`, rather than a conjunction of single-attribute
+  checks. Consumers inspecting policy JSON must accept both string and array
+  attributes. Policy evaluation is unchanged.
+- Upgrade the pinned Cedar policy engine to 4.13.0, regex to 1.13, and Utoipa
+  to 5.5; refresh transitive dependencies while retaining Rust 1.93.1 support.
+- Preserve rejection of invalid action applications during schema validation,
+  which Cedar 4.13 now reports as warnings. Other warnings remain non-fatal.
+- Refresh pinned GitHub Actions, including Rust PR Bench 1.3.0 and
+  taiki-e/install-action 2.87.16.
+
 ## [0.1.0] - 2026-09-06
 
 ### Breaking changes

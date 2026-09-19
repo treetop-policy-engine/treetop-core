@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::error::PolicyError;
 use crate::types::PermitPolicy;
-use cedar_policy::{Effect, ParseErrors, PolicyId, PolicySet, Schema, ValidationMode, Validator};
+use cedar_policy::{
+    Effect, ParseErrors, PolicyId, PolicySet, Schema, ValidationMode, ValidationWarning, Validator,
+};
 
 /// Compile Cedar policy text into a `PolicySet`.
 ///
@@ -34,12 +36,24 @@ pub fn compile_policy_with_schema(text: &str, schema: &Schema) -> Result<PolicyS
 }
 
 /// Validate an already-compiled policy set against a schema.
+///
+/// Invalid action applications are rejected even though Cedar reports them as
+/// warnings starting in 4.13. Other validation warnings remain non-fatal.
 pub fn validate_policy_set_with_schema(
     set: &PolicySet,
     schema: &Schema,
 ) -> Result<(), PolicyError> {
     let validator = Validator::new(schema.clone());
     let result = validator.validate(set, ValidationMode::Strict);
+    // Preserve the schema-validation contract from before Cedar 4.13.
+    let invalid_action = result
+        .validation_warnings()
+        .find(|warning| matches!(warning, ValidationWarning::InvalidActionApplication(_)));
+    if let Some(warning) = invalid_action {
+        return Err(PolicyError::ParseError(format!(
+            "policy failed schema validation: {warning}"
+        )));
+    }
     if result.validation_passed() {
         return Ok(());
     }
@@ -151,6 +165,62 @@ mod tests {
 
         let policy_set = compile_policy_with_schema(policy_text, &schema);
         assert!(matches!(policy_set, Err(PolicyError::ParseError(_))));
+    }
+
+    #[test]
+    fn schema_validation_rejects_invalid_action_application() {
+        let schema: Schema = r#"
+            entity User;
+            entity Service;
+            entity Document;
+            action "read" appliesTo {
+                principal: [User],
+                resource: [Document],
+            };
+        "#
+        .parse()
+        .unwrap();
+        let text = r#"permit (
+            principal is Service,
+            action == Action::"read",
+            resource is Document
+        );"#;
+        let set = compile_policy(text).unwrap();
+        let result = Validator::new(schema.clone()).validate(&set, ValidationMode::Strict);
+        assert!(result.validation_passed());
+        assert!(
+            result
+                .validation_warnings()
+                .any(|warning| matches!(warning, ValidationWarning::InvalidActionApplication(_)))
+        );
+        assert!(matches!(
+            compile_policy_with_schema(text, &schema),
+            Err(PolicyError::ParseError(message)) if message.contains("policy failed schema validation")
+        ));
+    }
+
+    #[test]
+    fn schema_validation_still_accepts_other_warnings() {
+        let schema: Schema = r#"
+            entity User;
+            entity Document;
+            action "read" appliesTo {
+                principal: [User],
+                resource: [Document],
+            };
+        "#
+        .parse()
+        .unwrap();
+        let text = r#"permit (principal, action, resource) when { false };"#;
+        let set = compile_policy(text).unwrap();
+        let result = Validator::new(schema.clone()).validate(&set, ValidationMode::Strict);
+        assert!(result.validation_passed());
+        assert!(
+            result
+                .validation_warnings()
+                .any(|warning| matches!(warning, ValidationWarning::ImpossiblePolicy(_)))
+        );
+        assert!(compile_policy_with_schema(text, &schema).is_ok());
     }
 
     #[test]

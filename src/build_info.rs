@@ -119,7 +119,7 @@ mod tests {
     fn test_cargo_values() {
         let build_info = build_info();
         assert_eq!(build_info.crate_name, "treetop-core");
-        assert_eq!(build_info.cedar_version, "4.12.0");
+        assert_eq!(build_info.cedar_version, "4.13.0");
     }
 
     #[test]
