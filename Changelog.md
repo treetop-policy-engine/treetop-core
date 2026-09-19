@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
 ### Changed
 
 - **BREAKING**: Cedar 4.13 serializes nested `has` expressions in returned policy
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to 5.5; refresh transitive dependencies while retaining Rust 1.93.1 support.
 - Preserve rejection of invalid action applications during schema validation,
   which Cedar 4.13 now reports as warnings. Other warnings remain non-fatal.
+- Raise direct dependency requirements to the validated current stable versions.
 - Refresh pinned GitHub Actions, including Rust PR Bench 1.3.0 and
   taiki-e/install-action 2.87.16.
 
