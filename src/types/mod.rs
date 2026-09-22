@@ -15,6 +15,7 @@ mod cedar_type;
 mod decision;
 mod entity_uid;
 mod group;
+mod policy_json;
 mod principal;
 mod qualified_id;
 mod request;
@@ -34,6 +35,7 @@ pub use entity_uid::{
     action_entity_uid, group_entity_uid, namespace_segments, resource_entity_uid, user_entity_uid,
 };
 pub use group::{Group, Groups};
+pub use policy_json::PolicyJson;
 pub use principal::Principal;
 pub use qualified_id::{
     ActionId, ActionMarker, GroupId, GroupMarker, QualifiedId, QualifiedIdKind, UserId, UserMarker,

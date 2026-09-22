@@ -8,6 +8,7 @@ use serde_json::Value;
 use utoipa::openapi::{RefOr, schema::Schema};
 use utoipa::{PartialSchema, ToSchema};
 
+use super::policy_json::PolicyJson;
 use crate::error::PolicyError;
 use crate::labels::LabelSetVersion;
 
@@ -16,8 +17,12 @@ use crate::labels::LabelSetVersion;
 pub struct PermitPolicy {
     #[schema(value_type = String)]
     pub literal: Arc<str>,
+    /// Shared immutable Cedar JSON, compacted when this metadata is constructed.
+    ///
+    /// Serialize directly without reconstructing a JSON tree. Use
+    /// [`PolicyJson::to_value`] for an owned, mutable copy.
     #[schema(value_type = serde_json::Value)]
-    pub json: Arc<Value>,
+    pub json: Arc<PolicyJson>,
     #[schema(value_type = Option<String>)]
     pub annotation_id: Option<Arc<str>>,
     #[schema(value_type = String)]
@@ -25,11 +30,15 @@ pub struct PermitPolicy {
 }
 
 impl PermitPolicy {
+    /// Construct descriptive metadata, compacting JSON and extracting its ID.
+    ///
+    /// This accepts arbitrary JSON; it does not validate a Cedar policy or
+    /// authorize a request. Only engine evaluation produces a trusted decision.
     pub fn new(literal: String, json: Value, cedar_id: String) -> Self {
         let annotation_id = Self::extract_annotation_id(&literal, &json);
         Self {
             literal: literal.into(),
-            json: Arc::new(json),
+            json: Arc::new(PolicyJson::from(json)),
             annotation_id,
             cedar_id: cedar_id.into(),
         }

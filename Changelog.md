@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: `PermitPolicy.json` now stores `Arc<PolicyJson>` instead of
+  `Arc<serde_json::Value>`. Immutable, compact metadata reduces retained permit
+  JSON allocations while keeping evaluation free of JSON parsing or tree
+  reconstruction. Serialized JSON, source field order, and the OpenAPI JSON
+  shape are preserved. `PermitPolicy::new` still accepts `serde_json::Value`;
+  struct literals should use `Arc::new(value.into())`, and callers that inspect
+  or edit a JSON tree should use `policy.json.to_value()`. See
+  [the migration and measurements](docs/PermitJson.md).
+
 ### Added
 
+- Add shared Criterion and Gungraun permit-metadata fixtures for construction,
+  first and repeated evaluations, direct serialization, and JSON materialization,
+  with and without observability.
 - Add concurrent evaluation probes for monolithic and partitioned engines,
   repeated reloads, retained sessions, observability, throughput, tail latency,
   and process memory, with a separately versioned shared operational fixture.
