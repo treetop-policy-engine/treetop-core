@@ -19,7 +19,9 @@ fn permit_metadata(c: &mut Criterion) {
             b.iter_batched_ref(
                 || fixture.engine(),
                 |engine| black_box(engine.evaluate(black_box(&fixture.request)).unwrap()),
-                BatchSize::SmallInput,
+                // Evaluate immediately after each engine's setup. Batching
+                // many unevaluated engines adds unrelated cache pressure.
+                BatchSize::PerIteration,
             );
         });
         let engine = fixture.engine();
