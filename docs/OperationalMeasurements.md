@@ -50,6 +50,9 @@ times and exclude queueing. They cannot establish an HTTP p99 or saturation SLO.
 Throughput includes decision checks and sample bookkeeping, while each latency
 sample times only `evaluate`. Startup, compilation, fixture generation, warm-up,
 session verification, and reporting are outside the measured request interval.
+Throughput divides total requests by the longest worker interval after the start
+barrier. Reload time covers the complete control loop, including session capture
+and version bookkeeping, and is not added to request latency.
 
 Each row constructs a fresh engine. RSS includes the engine, schemas, request
 fixtures, every replacement input string, samples, and allocator retention.
