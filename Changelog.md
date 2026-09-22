@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add property-based security coverage for Cedar/Serde identity boundaries,
   scoped label sanitization, and monolithic/partitioned authorization equivalence.
   CI now exercises both default and all-feature test suites.
+- Add concurrent evaluation probes for monolithic and partitioned engines,
+  repeated reloads, retained sessions, observability, throughput, tail latency,
+  and process memory, with a separately versioned shared operational fixture.
+- Add a benchmark-only allocation probe distinguishing compiled Cedar state,
+  permit/forbid metadata, transient allocation peaks, retained generations,
+  and allocator-retained RSS. Weekly scale CI runs both operational probes.
 
 ### Changed
 
