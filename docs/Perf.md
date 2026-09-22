@@ -137,8 +137,9 @@ Repeat with `--features bench-internal,observability`; this fixture installs a
 borrowed sink that increments a bounded atomic counter. Criterion measures 20
 samples with a one-second warmup and a two-second measurement target. Construction
 includes engine destruction in Criterion; Gungraun excludes destruction of the
-returned engine. First-evaluation setup constructs an unevaluated engine outside
-measurement. Repeated Gungraun cases execute 100 evaluations after one warmup;
+returned engine. First-evaluation setup constructs one unevaluated engine outside
+measurement immediately before each measured evaluation (`PerIteration` batching
+in Criterion). Repeated Gungraun cases execute 100 evaluations after one warmup;
 serialization cases reuse a decision prepared outside measurement. Both backends
 include the complete 64-policy evaluation, not just copying returned metadata.
 
