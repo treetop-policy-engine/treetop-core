@@ -7,6 +7,57 @@
 /// Deterministic large-policy fixtures shared by Treetop benchmark suites.
 pub mod policy_scale;
 
+/// Versioned fixtures for concurrent evaluation and retained-generation probes.
+pub mod operational_scale;
+
+/// Build and retain the actual engine metadata without changing production loading.
+///
+/// The opaque owner lets the memory probe distinguish compiled Cedar state from
+/// Treetop's additional permit literals/JSON and forbid IDs. Benchmark support only.
+pub fn retain_policy_metadata(set: &cedar_policy::PolicySet) -> MetadataAllocationProbe {
+    MetadataAllocationProbe {
+        permits: loader::precompute_permit_policies(set)
+            .expect("benchmark permit metadata must build"),
+        forbids: loader::precompute_forbid_policy_ids(set),
+    }
+}
+
+/// Benchmark-only owner of independently disposable metadata components.
+/// Never used by an engine or returned decision.
+pub struct MetadataAllocationProbe {
+    permits: std::collections::HashMap<cedar_policy::PolicyId, crate::PermitPolicy>,
+    forbids: std::collections::HashMap<cedar_policy::PolicyId, String>,
+}
+
+impl MetadataAllocationProbe {
+    /// Release JSON trees, retaining one shared null placeholder.
+    pub fn release_json(&mut self) {
+        let null = Arc::new(serde_json::Value::Null);
+        for policy in self.permits.values_mut() {
+            policy.json = null.clone();
+        }
+    }
+
+    /// Release policy source strings, retaining one shared empty placeholder.
+    pub fn release_literals(&mut self) {
+        let empty: Arc<str> = Arc::from("");
+        for policy in self.permits.values_mut() {
+            policy.literal = empty.clone();
+        }
+    }
+
+    /// Release returned IDs and the forbid map. Permit index keys stay allocated
+    /// until this owner is dropped; this separates index storage from payloads.
+    pub fn release_ids(&mut self) {
+        let empty: Arc<str> = Arc::from("");
+        for policy in self.permits.values_mut() {
+            policy.annotation_id = None;
+            policy.cedar_id = empty.clone();
+        }
+        self.forbids = std::collections::HashMap::new();
+    }
+}
+
 use cedar_policy::{PrincipalConstraint, ResourceConstraint};
 use std::sync::Arc;
 use std::sync::LazyLock;
