@@ -20,6 +20,8 @@ jobs:
       backend: all
       benchmarks_json: >-
         [
+          {"name":"permit_metadata_criterion","bench":"permit_metadata_criterion","backend":"criterion"},
+          {"name":"bench_iai_permit_metadata","bench":"bench_iai_permit_metadata","backend":"gungraun"},
           {"name":"evaluate_criterion_baseline","bench":"evaluate_criterion_baseline","backend":"criterion"},
           {"name":"evaluate_criterion_sessions","bench":"evaluate_criterion_sessions","backend":"criterion"},
           {"name":"evaluate_criterion_groups","bench":"evaluate_criterion_groups","backend":"criterion"},
