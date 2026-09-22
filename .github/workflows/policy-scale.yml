@@ -87,3 +87,70 @@ jobs:
         run: >-
           cargo bench --locked --features bench-internal
           --bench policy_scale_criterion -- --noplot
+
+  operational:
+    name: Concurrent load (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["bench-internal", "bench-internal,observability"]
+    env:
+      TREETOP_OPERATIONAL_STORES: "8"
+      TREETOP_OPERATIONAL_POLICIES_PER_STORE: "128"
+      TREETOP_OPERATIONAL_SAMPLES: "1000"
+      TREETOP_OPERATIONAL_WORKERS: "1,2,4,8,16"
+      TREETOP_OPERATIONAL_RELOADS: "3"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: 1.93.1
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Compile and validate operational corpus
+        run: |
+          cargo test --release --locked --features '${{ matrix.features }}' --test operational_scale
+          cargo bench --locked --features '${{ matrix.features }}' \
+            --bench policy_concurrency_probe --bench policy_memory_probe --no-run
+
+      - name: Record machine and concurrency reports
+        run: |
+          mkdir -p operational-reports
+          { rustc -Vv; lscpu; } > operational-reports/environment.txt
+          for layout in monolithic partitioned; do
+            for mode in steady reload retained; do
+              TREETOP_OPERATIONAL_LAYOUT="$layout" TREETOP_OPERATIONAL_MODE="$mode" \
+                cargo bench --locked --features '${{ matrix.features }}' \
+                  --bench policy_concurrency_probe \
+                  > "operational-reports/$layout-$mode.md"
+              cat "operational-reports/$layout-$mode.md" >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
+
+      - name: Attribute live memory and snapshot retention
+        if: matrix.features == 'bench-internal'
+        env:
+          TREETOP_SCALE_POLICY_COUNT: "10000"
+        run: |
+          for mode in parse validated metadata metadata-parts engine reload retained; do
+            TREETOP_MEMORY_MODE="$mode" \
+              cargo bench --locked --features bench-internal --bench policy_memory_probe \
+                > "operational-reports/memory-$mode.md"
+            cat "operational-reports/memory-$mode.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Preserve reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: operational-${{ strategy.job-index }}
+          path: operational-reports/
+          if-no-files-found: error
+          retention-days: 30

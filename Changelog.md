@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add concurrent evaluation probes for monolithic and partitioned engines,
+  repeated reloads, retained sessions, observability, throughput, tail latency,
+  and process memory, with a separately versioned shared operational fixture.
+- Add a benchmark-only allocation probe distinguishing compiled Cedar state,
+  permit/forbid metadata, transient allocation peaks, retained generations,
+  and allocator-retained RSS. Weekly scale CI runs both operational probes.
+
 ## [0.2.0] - 2026-09-19
 
 ### Changed
