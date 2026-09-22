@@ -96,9 +96,55 @@ metadata construction, allocation/reallocation calls increase from 1,802,121 to
 Compaction trades some construction work for lower retained memory.
 
 RSS after initial load remains about 109 MiB in both versions. With three retained
-generations, RSS reaches about 327 MiB originally and 275 MiB with compact JSON,
+generations, RSS reaches about 327 MiB originally and 276 MiB with compact JSON,
 and stays high after sessions are dropped. These RSS observations include
 allocator retention and cannot be interpreted as the live size of policy JSON.
+
+### Construction, evaluation, and serialization
+
+Criterion medians below are in microseconds. Off/on refers to observability;
+the enabled fixture installs a bounded borrowed sink. Compare original and
+compact within each feature configuration, not off against on.
+
+| Phase (matches) | Off original µs | Off compact µs | Change | On original µs | On compact µs | Change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Load (1) | 9211.546 | 9203.806 | -0.1% | 9259.935 | 9307.775 | +0.5% |
+| First evaluation (1) | 130.957 | 125.335 | -4.3% | 147.075 | 130.325 | -11.4% |
+| Repeated evaluation (1) | 93.106 | 93.343 | +0.3% | 92.296 | 92.726 | +0.5% |
+| Serialize decision (1) | 1.800 | 1.931 | +7.3% | 1.476 | 1.499 | +1.5% |
+| Materialize decision value (1) | 7.771 | 7.802 | +0.4% | 7.828 | 7.928 | +1.3% |
+| Load (64) | 9473.379 | 9376.771 | -1.0% | 9402.887 | 9590.625 | +2.0% |
+| First evaluation (64) | 290.238 | 257.047 | -11.4% | 370.409 | 321.921 | -13.1% |
+| Repeated evaluation (64) | 217.452 | 230.274 | +5.9% | 228.123 | 226.726 | -0.6% |
+| Serialize decision (64) | 84.916 | 84.554 | -0.4% | 73.493 | 77.823 | +5.9% |
+| Materialize decision value (64) | 625.477 | 619.090 | -1.0% | 635.982 | 619.895 | -2.5% |
+
+Gungraun instruction changes, with ranges covering the one- and 64-match cases:
+
+| Phase | Observability off | Observability on |
+| --- | ---: | ---: |
+| Load (one-match fixture) | +2.35% | +2.58% |
+| First evaluation | -0.20% to +0.59% | -0.16% to +0.05% |
+| Repeated evaluation | -1.42% to +0.02% | -3.72% to +0.10% |
+| Serialize decision | -2.16% to +0.53% | -0.12% to +3.04% |
+| Materialize decision value | -0.44% to +4.29% | -0.98% to +4.16% |
+
+The unchanged Criterion evaluation slice (small allow/deny, medium, and large)
+ranged from -3.2% to +3.1% across both feature sets. The existing Gungraun metadata
+loader increased 1.22% without observability and 0.74% with it. All 28 Criterion
+and 24 Gungraun comparisons stay within the configured 10% and 8% limits. These
+are measured construction and serialization tradeoffs, not a claim of a general
+evaluation speedup. First-use wall times varied substantially on this shared
+host; instruction counts provide an additional check on work performed.
+
+Allocation, construction, and evaluation rows use the storage implementation at
+`4f19b05537721264513638eec01089d058771b93`. Serialization and materialization rows
+use the final `#[inline(always)]` serializer with identical storage and fixture
+code, measured separately in both feature configurations. Keeping the small JSON
+dispatch inlined into Serde callers brought the one-match observability case
+within the latency budget. This changes neither retained layout nor evaluation
+work; evaluation does not call the serializer. Functional tests, snapshots,
+schema checks, and MSRV verification cover the final serializer as well.
 
 See [the performance guide](Perf.md) for the CPU benchmark protocol and
 [the allocation protocol](OperationalMeasurements.md) for fresh-process memory
