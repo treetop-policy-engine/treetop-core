@@ -110,9 +110,10 @@ pub use policy_store::{
 };
 pub use types::{
     Action, AttrValue, CedarIp, CedarType, Decision, DecisionDiagnostics, DecisionDto, Group,
-    Groups, PermitPolicies, PermitPolicy, PolicyCandidates, PolicyEffectFilter, PolicyMatch,
-    PolicyMatchReason, PolicyVersion, Principal, Request, RequestContext, Resource, User,
-    action_entity_uid, group_entity_uid, namespace_segments, resource_entity_uid, user_entity_uid,
+    Groups, PermitPolicies, PermitPolicy, PolicyCandidates, PolicyEffectFilter, PolicyJson,
+    PolicyMatch, PolicyMatchReason, PolicyVersion, Principal, Request, RequestContext, Resource,
+    User, action_entity_uid, group_entity_uid, namespace_segments, resource_entity_uid,
+    user_entity_uid,
 };
 
 #[cfg(feature = "observability")]

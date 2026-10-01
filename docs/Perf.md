@@ -44,6 +44,11 @@ current expectations, and initial measurements.
   instruction-level routing and evaluation probe.
 - `benches/bench_iai_*.rs` contains focused Gungraun benchmarks for internal hot
   paths.
+- `permit_metadata_criterion.rs` and `bench_iai_permit_metadata.rs` share a
+  64-policy fixture with one or all permits matching. They measure construction,
+  first evaluation, repeated evaluation, direct decision serialization, and
+  materialization into `serde_json::Value`. See
+  [compact permit JSON](PermitJson.md) for the representation and migration.
 - `src/bench_helpers/policy_scale.rs` generates versioned deterministic scale
   corpora and target requests shared by Core and downstream Treetop benchmarks
   through the opt-in `bench-internal` feature.
@@ -118,6 +123,25 @@ cargo bench --bench evaluate_criterion_baseline \
 
 Replace `baseline` with `groups`, `labels`, or `namespaced` for the other
 evaluation slices.
+
+Compare retained metadata without conflating first use with steady evaluation:
+
+```bash
+cargo bench --locked --features bench-internal \
+  --bench permit_metadata_criterion -- --noplot
+cargo bench --locked --features bench-internal \
+  --bench bench_iai_permit_metadata -- --save-summary=pretty-json
+```
+
+Repeat with `--features bench-internal,observability`; this fixture installs a
+borrowed sink that increments a bounded atomic counter. Criterion measures 20
+samples with a one-second warmup and a two-second measurement target. Construction
+includes engine destruction in Criterion; Gungraun excludes destruction of the
+returned engine. First-evaluation setup constructs one unevaluated engine outside
+measurement immediately before each measured evaluation (`PerIteration` batching
+in Criterion). Repeated Gungraun cases execute 100 evaluations after one warmup;
+serialization cases reuse a decision prepared outside measurement. Both backends
+include the complete 64-policy evaluation, not just copying returned metadata.
 
 Run the 100,000-policy scale correctness test and benchmark:
 

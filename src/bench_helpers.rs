@@ -32,7 +32,7 @@ pub struct MetadataAllocationProbe {
 impl MetadataAllocationProbe {
     /// Release JSON trees, retaining one shared null placeholder.
     pub fn release_json(&mut self) {
-        let null = Arc::new(serde_json::Value::Null);
+        let null = Arc::new(crate::PolicyJson::from(serde_json::Value::Null));
         for policy in self.permits.values_mut() {
             policy.json = null.clone();
         }
