@@ -51,6 +51,17 @@ current expectations, and initial measurements.
   Callgrind.
 - `benches/policy_scale_probe.rs` produces a concise CPU-sensitive latency and
   phase-memory report for one configured policy count.
+- `benches/policy_concurrency_probe.rs` measures concurrent evaluation through
+  repeated reloads, with optional retained generations and an active borrowed
+  metrics sink when observability is enabled.
+- `benches/policy_memory_probe.rs` isolates live Rust allocation payloads,
+  transient peaks, metadata components, and snapshot retention. Its counting
+  allocator is confined to the probe executable; its timings must not be used
+  as performance baselines.
+
+These standalone probes run in `policy-scale.yml`; they are intentionally
+excluded from the Criterion/Gungraun matrix in `perf.yml`. See
+[the operational measurement protocol](OperationalMeasurements.md).
 
 The shared fixture is deliberately exposed only with `bench-internal`, allowing
 other Treetop components to benchmark the same versioned policy and request

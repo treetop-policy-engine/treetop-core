@@ -306,6 +306,11 @@ hide component-specific costs.
 
 ## Performance Investigation Priorities
 
+The [operational probes](OperationalMeasurements.md) now exercise concurrency,
+repeated reloads, retained sessions, and allocation attribution. Their
+[initial findings](OperationalBaseline.md) refine the investigation priorities
+below without changing the original scale corpus or historical measurements.
+
 The initial measurements point to five work streams:
 
 1. **Transient versus steady memory.** Attribute parsing, CST conversion, schema
