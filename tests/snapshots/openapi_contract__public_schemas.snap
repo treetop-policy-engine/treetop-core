@@ -1,0 +1,458 @@
+---
+source: tests/openapi_contract.rs
+expression: "document[\"components\"][\"schemas\"]"
+---
+{
+  "Action": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/QualifiedId"
+      }
+    ],
+    "description": "An action, possibly with a namespace (e.g. Infra::Action::\"delete_vm\")."
+  },
+  "AttrValue": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "value",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "String"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "value",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Bool"
+            ]
+          },
+          "value": {
+            "type": "boolean"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "value",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Long"
+            ]
+          },
+          "value": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "value",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Ip"
+            ]
+          },
+          "value": {
+            "$ref": "#/components/schemas/CedarIp"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "value",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Set"
+            ]
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttrValue"
+            }
+          }
+        }
+      }
+    ],
+    "description": "Attribute values that can be attached to Cedar entities."
+  },
+  "CedarIp": {
+    "type": "string",
+    "description": "An IP address or network accepted by Cedar's `ip()` extension."
+  },
+  "Decision": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "Allow"
+        ],
+        "properties": {
+          "Allow": {
+            "type": "object",
+            "required": [
+              "policies",
+              "version"
+            ],
+            "properties": {
+              "policies": {
+                "$ref": "#/components/schemas/PermitPolicies"
+              },
+              "version": {
+                "$ref": "#/components/schemas/PolicyVersion"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "Deny"
+        ],
+        "properties": {
+          "Deny": {
+            "type": "object",
+            "required": [
+              "version"
+            ],
+            "properties": {
+              "version": {
+                "$ref": "#/components/schemas/PolicyVersion"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "description": "Allow or deny decision produced by a trusted engine evaluation."
+  },
+  "DecisionDiagnostics": {
+    "type": "object",
+    "description": "Authorization decision plus deny-side forbid diagnostics.",
+    "required": [
+      "decision"
+    ],
+    "properties": {
+      "decision": {
+        "$ref": "#/components/schemas/Decision"
+      },
+      "matched_forbid_policy_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "DecisionDto": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "Allow"
+        ],
+        "properties": {
+          "Allow": {
+            "type": "object",
+            "required": [
+              "policies",
+              "version"
+            ],
+            "properties": {
+              "policies": {
+                "$ref": "#/components/schemas/PermitPolicies"
+              },
+              "version": {
+                "$ref": "#/components/schemas/PolicyVersion"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "Deny"
+        ],
+        "properties": {
+          "Deny": {
+            "type": "object",
+            "required": [
+              "version"
+            ],
+            "properties": {
+              "version": {
+                "$ref": "#/components/schemas/PolicyVersion"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "description": "Serializable and deserializable decision-shaped data without authority."
+  },
+  "Group": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/QualifiedId"
+      }
+    ],
+    "description": "A group identifier (e.g. Group::\"devs\")."
+  },
+  "Groups": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/Group"
+    },
+    "description": "A collection of Group entries."
+  },
+  "LabelSetVersion": {
+    "type": "string"
+  },
+  "LabelTarget": {
+    "type": "object",
+    "description": "Exclusive ownership of one attribute on one exact Cedar resource type.\n\nResource types include their complete namespace: `App::Host` and `Other::Host`\nare distinct scopes. Wildcards and resource entity IDs are not scopes.\nConstruction and deserialization validate both components once.\n\n```\nuse treetop_core::LabelTarget;\nlet target = LabelTarget::new(\"App::Host\", \"labels\")?;\nassert_eq!(target.resource_type(), \"App::Host\");\n# Ok::<(), treetop_core::PolicyError>(())\n```\n\n```compile_fail\nuse treetop_core::LabelTarget;\nlet target = LabelTarget { resource_type: \"*\".into(), attribute: \"id\".into() };\n```",
+    "required": [
+      "resource_type",
+      "attribute"
+    ],
+    "properties": {
+      "attribute": {
+        "type": "string"
+      },
+      "resource_type": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "PermitPolicies": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/PermitPolicy"
+    },
+    "description": "A collection of permit policies with optimized access patterns.\n\nThis wrapper provides efficient methods for common operations like\ndisplaying policies, extracting IDs, and iterating over policies.\n\nSerializes as a flat array instead of a nested object."
+  },
+  "PermitPolicy": {
+    "type": "object",
+    "description": "A permit policy that permitted a specific action on a resource.",
+    "required": [
+      "literal",
+      "json",
+      "cedar_id"
+    ],
+    "properties": {
+      "annotation_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cedar_id": {
+        "type": "string"
+      },
+      "json": {
+        "description": "Shared immutable Cedar JSON, compacted when this metadata is constructed.\n\nSerialize directly without reconstructing a JSON tree. Use\n[`PolicyJson::to_value`] for an owned, mutable copy."
+      },
+      "literal": {
+        "type": "string"
+      }
+    }
+  },
+  "PolicyJson": {},
+  "PolicyVersion": {
+    "type": "object",
+    "description": "Version metadata for the complete engine state used during an evaluation.",
+    "required": [
+      "hash",
+      "loaded_at",
+      "label_set",
+      "generation"
+    ],
+    "properties": {
+      "generation": {
+        "type": "integer",
+        "format": "int64",
+        "description": "Monotonic generation within this engine instance.",
+        "minimum": 0
+      },
+      "hash": {
+        "type": "string",
+        "description": "Hash of the policy source (e.g. SHA-256 of the policy text)."
+      },
+      "label_set": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LabelSetVersion",
+            "description": "Application-defined label-set version, when the installed registry has one."
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "loaded_at": {
+        "type": "string",
+        "description": "When this policy set was loaded into the engine."
+      }
+    }
+  },
+  "Principal": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "User"
+        ],
+        "properties": {
+          "User": {
+            "$ref": "#/components/schemas/User"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "Group"
+        ],
+        "properties": {
+          "Group": {
+            "$ref": "#/components/schemas/Group"
+          }
+        }
+      }
+    ],
+    "description": "A principal for a policy query."
+  },
+  "QualifiedId": {
+    "type": "object",
+    "description": "A fully qualified, validated identifier with its parsed Cedar UID cached.",
+    "required": [
+      "id",
+      "namespace"
+    ],
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "namespace": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "Request": {
+    "type": "object",
+    "description": "The API-level request, with strongly-typed principal, action, groups, resource, and context.",
+    "required": [
+      "principal",
+      "action",
+      "resource"
+    ],
+    "properties": {
+      "action": {
+        "$ref": "#/components/schemas/Action"
+      },
+      "principal": {
+        "$ref": "#/components/schemas/Principal"
+      },
+      "resource": {
+        "$ref": "#/components/schemas/Resource"
+      }
+    }
+  },
+  "RequestContext": {
+    "type": "object",
+    "description": "Typed wrapper for request context attributes.\n\nContext values are passed to Cedar as restricted expressions.",
+    "additionalProperties": {
+      "$ref": "#/components/schemas/AttrValue"
+    },
+    "propertyNames": {
+      "type": "string"
+    }
+  },
+  "Resource": {
+    "type": "object",
+    "description": "A resource entity in the Cedar policy model.",
+    "required": [
+      "kind",
+      "id"
+    ],
+    "properties": {
+      "attrs": {
+        "type": "object",
+        "description": "Arbitrary attributes to attach to the resource entity",
+        "additionalProperties": {
+          "$ref": "#/components/schemas/AttrValue"
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
+      "id": {
+        "type": "string",
+        "description": "Entity id (quotes are added when rendering the Cedar literal)"
+      },
+      "kind": {
+        "type": "string",
+        "description": "Entity type, possibly namespaced: e.g. \"Host\", \"Gateway\", or \"Database::Table\""
+      }
+    }
+  },
+  "User": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/QualifiedId"
+      },
+      {
+        "type": "object",
+        "required": [
+          "groups"
+        ],
+        "properties": {
+          "groups": {
+            "$ref": "#/components/schemas/Groups"
+          }
+        }
+      }
+    ],
+    "description": "A user principal, possibly with a namespace (e.g. Application::User::\"alice\")."
+  }
+}
