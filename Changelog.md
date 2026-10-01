@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add property-based security coverage for Cedar/Serde identity boundaries,
+  scoped label sanitization, and monolithic/partitioned authorization equivalence.
+  CI now exercises both default and all-feature test suites.
+
+### Changed
+
+- Use bounded atomic counters and the borrowed observation callback in the
+  README metrics example, avoiding synchronous printing and event retention.
+
 ## [0.2.0] - 2026-09-19
 
 ### Changed

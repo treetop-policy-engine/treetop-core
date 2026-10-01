@@ -242,6 +242,9 @@ benchmarks, and Gungraun/Callgrind benchmarks.
 
 ## Change Discipline
 
+- Sign every commit pushed to a pull request with a GitHub-registered signing
+  key. Verify signatures locally before pushing and confirm GitHub reports every
+  PR commit as verified afterward. Never push an unsigned commit to a PR branch.
 - Merge pull requests into `main` with a squash merge rather than a merge commit
   or rebase merge.
 - Use the detailed pull request description as the squash commit body. Preserve

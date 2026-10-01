@@ -37,7 +37,10 @@ jobs:
       - name: Run clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: Run tests
+      - name: Run default-feature tests
+        run: cargo test --locked
+
+      - name: Run all-feature tests
         run: cargo test --locked --all-features
 
       - name: Exercise 10k-policy scale corpus

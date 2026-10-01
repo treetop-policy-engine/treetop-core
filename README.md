@@ -37,20 +37,43 @@ Enable in your crate:
 treetop-core = { version = "0", features = ["observability"] }
 ```
 
-Register a sink:
+Register a sink with fixed-size counters. Callbacks execute synchronously, so
+export metrics separately from the evaluation path:
 
 ```rust
 use std::sync::Arc;
-use treetop_core::metrics::{set_sink, EvaluationStats, ReloadStats, MetricsSink};
+use std::sync::atomic::{AtomicU64, Ordering};
+use treetop_core::metrics::{
+    set_sink, EvaluationObservation, EvaluationStats, ReloadStats, MetricsSink,
+};
 
-struct MySink;
-impl MetricsSink for MySink {
-    fn on_evaluation(&self, stats: &EvaluationStats) { println!("{:?}", stats); }
-    fn on_reload(&self, stats: &ReloadStats) { println!("{:?}", stats); }
+#[derive(Default)]
+struct Counters {
+    allowed: AtomicU64,
+    denied: AtomicU64,
+    reloads: AtomicU64,
 }
 
-set_sink(Arc::new(MySink));
+impl MetricsSink for Counters {
+    fn on_evaluation_observation(&self, event: &EvaluationObservation<'_>) {
+        let counter = if event.allowed { &self.allowed } else { &self.denied };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // The borrowed callback above avoids the owned-payload adapter.
+    fn on_evaluation(&self, _: &EvaluationStats) {}
+
+    fn on_reload(&self, _: &ReloadStats) {
+        self.reloads.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+let counters = Arc::new(Counters::default());
+set_sink(counters.clone());
 ```
+
+This sink retains no event history, logs no identifiers, and allocates no metric
+dimensions. A separate exporter can read the counters with relaxed atomic loads.
 
 A different users have different permissions when it comes to creating hosts. Alice can create hosts within the domain `example_domain`,
 irrespective of the IP range, and with any name. Bob on the other hand can only create hosts with a acceptable names for web servers and
