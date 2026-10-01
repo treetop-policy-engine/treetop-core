@@ -38,7 +38,7 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
 tracing = "0.1.44"
-utoipa = "5.5.0"
+utoipa = "6.0.0"
 
 [features]
 default = []

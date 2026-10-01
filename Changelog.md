@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: Upgrade the public `utoipa::ToSchema` and `PartialSchema`
+  implementations to Utoipa 6. Applications composing OpenAPI documents from
+  Core types must update their direct `utoipa` dependency to version 6 and use
+  compatible integrations. Generated schemas retain their meaning; the nullable
+  `PolicyVersion.label_set` schema now places its reference before `null` in
+  `oneOf`. Request and decision JSON are unchanged, and Rust 1.93.1 remains the
+  minimum supported compiler.
 - **BREAKING**: `PermitPolicy.json` now stores `Arc<PolicyJson>` instead of
   `Arc<serde_json::Value>`. Immutable, compact metadata reduces retained permit
   JSON allocations while keeping evaluation free of JSON parsing or tree
