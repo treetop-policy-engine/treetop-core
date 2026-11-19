@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Upgrade the exact Cedar dependency to 4.15.0. Consumers that directly pin Cedar
+  must align their pin to 4.15.0 when they adopt this Core change. Cedar 4.15 adds
+  variadic `isInRange` and can format attributes with valid identifiers using dot notation.
+- Use Jiff for RFC 3339 policy timestamps in place of the unmaintained Humantime crate.
+
 ## [0.3.0] - 2026-10-02
 
 ### Changed
