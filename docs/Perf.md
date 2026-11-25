@@ -164,7 +164,7 @@ different scale. The default is 100,000 when the variable is absent.
 Gungraun requires Linux, Valgrind, and the runner version matching the crate:
 
 ```bash
-cargo install --locked gungraun-runner --version 0.19.4
+cargo install --locked gungraun-runner --version 0.20.0
 cargo bench --bench evaluate_iai_baseline
 ```
 

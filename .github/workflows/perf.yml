@@ -13,10 +13,11 @@ jobs:
   # standalone reports, not Criterion/Gungraun targets. Run them in policy-scale.yml.
   bench:
     name: PR Bench
-    # Immutable commit behind the v1.3.0 tag.
-    uses: terjekv/rust-pr-bench/.github/workflows/rust-pr-bench.yml@d0202becabbd115351a879c21f53ab9da6812a44
+    # Immutable commit behind the v1.4.1 tag.
+    uses: terjekv/rust-pr-bench/.github/workflows/rust-pr-bench.yml@c331e19464518a1b9ea8f35234f6da0c759898a5 # v1.4.1
     with:
-      action_ref: d0202becabbd115351a879c21f53ab9da6812a44
+      action_ref: c331e19464518a1b9ea8f35234f6da0c759898a5
+      runs_on: ubuntu-26.04
       backend: all
       benchmarks_json: >-
         [

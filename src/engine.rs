@@ -4,7 +4,7 @@ use cedar_policy::{
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::vec;
 
 use crate::labels::LabelRegistry;
@@ -24,6 +24,7 @@ use crate::types::{
 use crate::{Groups, Principal};
 use crate::{error::PolicyError, loader};
 use arc_swap::ArcSwap;
+use jiff::Timestamp;
 
 use sha2::{Digest, Sha256};
 use tracing::debug;
@@ -245,13 +246,17 @@ impl PolicySnapshot {
             hash.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
 
+        let loaded_at = Timestamp::now();
+        let precision = if loaded_at.subsec_nanosecond() == 0 {
+            0
+        } else {
+            9
+        };
         Ok(PolicySnapshot {
             sets,
             revision: PolicyRevision {
                 hash: hash.into(),
-                loaded_at: humantime::format_rfc3339(SystemTime::now())
-                    .to_string()
-                    .into(),
+                loaded_at: format!("{loaded_at:.precision$}").into(),
             },
             permit_policies,
             forbid_policy_ids,
