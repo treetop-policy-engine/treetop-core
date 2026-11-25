@@ -1,0 +1,5 @@
+[advisories]
+# Temporary exception for the maintenance notice on Cedar's datetime dependency.
+# Remove when a published Cedar release replaces Chrono, tracked upstream at
+# https://github.com/cedar-policy/cedar/pull/2728.
+ignore = ["RUSTSEC-2026-0543"]
