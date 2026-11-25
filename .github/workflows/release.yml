@@ -63,10 +63,10 @@ jobs:
         run: cargo doc --locked --all-features --no-deps
 
       - name: Lint Markdown
-        run: npx --yes markdownlint-cli2@0.24.1 --config .markdownlint.json "**/*.md" "!target"
+        run: npx --yes markdownlint-cli2@0.24.2 --config .markdownlint.json "**/*.md" "!target"
 
       - name: Install cargo-insta
-        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-insta@1.49.0
 
@@ -74,7 +74,7 @@ jobs:
         run: cargo insta test --all-features --unreferenced reject -- -q
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-audit@0.23.0
 
